@@ -278,6 +278,65 @@ fi
 
 # --- Step 7: download the model and build the Ollama tag, inside the container ---
 if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
+  # Ollama's server needs to be running for both the build step below and
+  # for actual use. Our systemd unit deliberately does NOT start it (so
+  # nothing loads into VRAM at login), and backgrounding it with nohup
+  # inside a 'distrobox enter -- bash -lc' session proved unreliable: the
+  # container runtime can tear down everything spawned in that exec
+  # session once it exits, nohup or not. Opening it in its own terminal
+  # window avoids that entirely, and lets you watch its output directly,
+  # which is also just useful to have open.
+  #
+  # distrobox shares the host's network namespace by default, so Ollama's
+  # port (11434) is reachable directly from the host without entering the
+  # container, this check and the wait loop below both rely on that.
+  if curl -s -o /dev/null "http://localhost:11434/api/tags"; then
+    echo "Ollama server already responding."
+  else
+    echo "Ollama server not responding. Opening a terminal window running"
+    echo "'ollama serve' inside $CONTAINER_NAME so you can watch it..."
+
+    TERMINAL_CMD=""
+    if command -v konsole >/dev/null 2>&1; then
+      TERMINAL_CMD="konsole -e"
+    elif command -v gnome-terminal >/dev/null 2>&1; then
+      TERMINAL_CMD="gnome-terminal --"
+    elif command -v xterm >/dev/null 2>&1; then
+      TERMINAL_CMD="xterm -e"
+    fi
+
+    if [ -z "$TERMINAL_CMD" ]; then
+      echo "ERROR: no terminal emulator found (tried konsole, gnome-terminal, xterm)." >&2
+      echo "Start it yourself in a terminal: distrobox enter $CONTAINER_NAME -- ollama serve" >&2
+      echo "Then re-run this script." >&2
+      OLLAMA_READY=no
+    else
+      # The 'read' at the end keeps the window open if ollama serve exits or
+      # crashes, so the error is visible instead of the window vanishing.
+      $TERMINAL_CMD bash -c "distrobox enter '$CONTAINER_NAME' -- ollama serve; echo; echo 'ollama serve exited.'; read -p 'Press Enter to close this window.'" &
+      disown
+
+      echo "Waiting for it to come up (up to 30s)..."
+      OLLAMA_READY=no
+      for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+        if curl -s -o /dev/null "http://localhost:11434/api/tags"; then
+          OLLAMA_READY=yes
+          break
+        fi
+        sleep 1
+      done
+    fi
+
+    if [ "$OLLAMA_READY" = "yes" ]; then
+      echo "Ollama server is up."
+    else
+      echo "WARNING: ollama serve still isn't responding after 30s." >&2
+      echo "Check the terminal window that opened for the actual error." >&2
+      echo "Skipping the download/build step, everything else still ran." >&2
+    fi
+  fi
+
+  if [ "${OLLAMA_READY:-yes}" = "yes" ]; then
   echo "Checking whether $GGUF_FILENAME is already downloaded inside $CONTAINER_NAME..."
   ALREADY_HAVE="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "find ~ -maxdepth 3 -iname '$GGUF_FILENAME' 2>/dev/null | head -n1")"
 
@@ -305,22 +364,6 @@ if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
   # what you actually picked, no manual file editing needed to try options.
   distrobox enter "$CONTAINER_NAME" -- bash -lc "
     set -e
-    # ollama create talks to the Ollama server daemon, which our systemd unit
-    # deliberately does NOT start (so nothing loads into VRAM at login).
-    # Start it now if it isn't already running. This only starts the server
-    # process, it does not load any model weights, that still only happens
-    # on first actual inference, so this doesn't change the VRAM-at-idle
-    # behavior, it just makes building/testing possible without a manual
-    # 'ollama serve' in another terminal first.
-    if ! pgrep -f 'ollama serve' >/dev/null 2>&1; then
-      echo 'Starting ollama serve in the background...'
-      nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
-      disown
-      for i in 1 2 3 4 5 6 7 8 9 10; do
-        ollama list >/dev/null 2>&1 && break
-        sleep 1
-      done
-    fi
     GGUF_PATH=\$(find ~ -maxdepth 3 -iname '$GGUF_FILENAME' 2>/dev/null | head -n1)
     if [ -z \"\$GGUF_PATH\" ]; then
       echo 'ERROR: could not locate $GGUF_FILENAME anywhere under home. Check the download step above.' >&2
@@ -358,6 +401,7 @@ MODELFILE_EOF
     echo "shows it running partly on CPU instead of the GPU, re-run this script"
     echo "and pick a smaller quant or a lower context length. Nothing above"
     echo "needs hand-editing, both are just prompts."
+  fi
   fi
 else
   echo "Skipped model download/build. Run this script again with 'yes' when ready."
