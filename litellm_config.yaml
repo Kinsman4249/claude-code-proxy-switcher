@@ -26,6 +26,15 @@ model_list:
       model: ollama/local-qwen35-coder-cc
       api_base: http://localhost:11434
 
+  # Claude Code actually sends this exact dated string for Haiku, not the
+  # short alias above. Confirmed via a live 400 error: "Invalid model name
+  # passed in model=claude-haiku-4-5-20251001". Keeping both entries since
+  # a future Claude Code version could plausibly use either form.
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: ollama/local-qwen35-coder-cc
+      api_base: http://localhost:11434
+
   - model_name: claude-sonnet-5
     litellm_params:
       model: ollama/local-qwen35-coder-cc
