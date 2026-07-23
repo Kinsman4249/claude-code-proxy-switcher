@@ -495,11 +495,36 @@ if [ -z "$LLAMA_SERVER_BIN" ]; then
     echo "(clone + cmake + CUDA compile, takes several minutes)..."
     BUILD_LOG="$(distrobox enter "$CONTAINER_NAME" -- bash -lc '
       set -e
+      # cuda-toolkit installs nvcc under /usr/local/cuda/bin, but does not add
+      # it to PATH itself (that normally happens via a fresh shell login after
+      # the alternatives symlink is set up) - add it here so nvcc is usable in
+      # this same subshell immediately after installing below, without needing
+      # a new distrobox enter.
+      export PATH="/usr/local/cuda/bin:$PATH"
       command -v cmake  >/dev/null 2>&1 || sudo dnf install -y cmake
       command -v git    >/dev/null 2>&1 || sudo dnf install -y git
       command -v g++    >/dev/null 2>&1 || sudo dnf install -y gcc-c++
       if ! command -v nvcc >/dev/null 2>&1; then
         echo "nvcc not found, attempting to install the CUDA toolkit..."
+        # Fedora'\''s own repos do not carry "cuda-toolkit" at all - it only exists
+        # once NVIDIA'\''s own repo is added, matched to the container'\''s Fedora
+        # version (confirmed empty on a stock Fedora 41 container: the plain
+        # "sudo dnf install -y cuda-toolkit" 404s with "No match for argument").
+        # See https://developer.download.nvidia.com/compute/cuda/repos/ for the
+        # list of repo files NVIDIA publishes per distro version.
+        if ! dnf list available cuda-toolkit >/dev/null 2>&1; then
+          FEDORA_VER="$(. /etc/os-release && echo "$VERSION_ID")"
+          REPO_URL="https://developer.download.nvidia.com/compute/cuda/repos/fedora${FEDORA_VER}/x86_64/cuda-fedora${FEDORA_VER}.repo"
+          if curl -fsI "$REPO_URL" >/dev/null 2>&1; then
+            echo "Adding NVIDIA'\''s CUDA repo for Fedora $FEDORA_VER ($REPO_URL)..."
+            sudo dnf config-manager addrepo --from-repofile="$REPO_URL"
+            sudo dnf makecache
+          else
+            echo "NVIDIA has no published CUDA repo for Fedora $FEDORA_VER yet" >&2
+            echo "($REPO_URL 404s). Check developer.nvidia.com/cuda-downloads for" >&2
+            echo "a supported release, or add a matching repo manually." >&2
+          fi
+        fi
         sudo dnf install -y cuda-toolkit || true
       fi
       if ! command -v nvcc >/dev/null 2>&1; then
