@@ -1,0 +1,33 @@
+# distrobox-reminder.service
+# Fires a desktop notification at graphical login reminding you to stop the
+# ollama-box container if you're about to game instead of code. The popup
+# stays on screen until you click it (urgency=critical), it does not
+# auto-dismiss on a timeout.
+#
+# Uses notify-send, which is part of the freedesktop notification spec and
+# should work regardless of whether you're on Plasma or GNOME. NOTE: I
+# haven't confirmed which notification daemon Bazzite ships by default on
+# your specific desktop session, so if the popup doesn't appear or doesn't
+# stay up until clicked, that's the first thing to check
+# (systemctl --user status distrobox-reminder.service and journalctl for
+# errors will tell you if notify-send itself failed).
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp distrobox-reminder.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now distrobox-reminder.service
+#
+# Test it immediately without logging out:
+#   systemctl --user restart distrobox-reminder.service
+
+[Unit]
+Description=Reminder to stop distrobox before gaming
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/notify-send -u critical "Gaming, not coding?" "Stop the ollama-box container first: distrobox stop ollama-box"
+
+[Install]
+WantedBy=graphical-session.target

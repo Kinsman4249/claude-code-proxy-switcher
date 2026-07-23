@@ -1,0 +1,35 @@
+# local-model.Modelfile
+# Builds a custom Ollama model tag from Qwen3.5-9B, replacing the earlier
+# Qwen2.5-Coder 7B pick. Qwen3.5-9B has much longer native context (262K vs
+# 32K), stronger tool-calling benchmarks, and is the right generation for
+# an 8GB-class card, Qwen3.6 needs 16GB+ even at its smallest dense size.
+#
+# TEXT ONLY / NO VISION: Qwen3.5 is natively multimodal, but in GGUF form
+# vision only loads if you separately download the mmproj-f16.gguf file.
+# Just don't download it. There is no separate "text-only quant" to pick,
+# skipping the mmproj file is the entire difference.
+#
+# Quant: UD-Q5_K_XL (Unsloth Dynamic, layer-aware quantization), 6.74 GB.
+# Best quality that still leaves headroom for KV cache on a 7.7 GB card.
+# Falls back to plain Q5_K_M (6.58 GB) if you hit loading issues with the
+# UD variant.
+#
+# Download (check the exact filename on the repo's file listing first,
+# Unsloth's naming can vary slightly by upload). huggingface-cli is
+# deprecated, use the current hf CLI:
+#   pip install -U huggingface_hub --break-system-packages
+#   hf download hf://unsloth/Qwen3.5-9B-GGUF/Qwen3.5-9B-UD-Q5_K_XL.gguf --local-dir ./
+#
+# Then build the tag, pointing FROM at the downloaded file, not a model
+# name (this is a local GGUF import, not an ollama pull):
+#   ollama create local-qwen35-coder-cc -f ./local-model.Modelfile
+
+FROM ./Qwen3.5-9B-UD-Q5_K_XL.gguf
+
+# Context window: 20K tokens, same reasoning as before, balance of
+# capability vs VRAM headroom on a 7.7 GB card.
+PARAMETER num_ctx 20480
+
+# Keep the model resident after use so back-to-back requests don't pay a
+# reload penalty. Lower this if you need the VRAM back between sessions.
+PARAMETER num_keep 24
