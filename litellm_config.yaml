@@ -16,9 +16,18 @@
 # cache, flash attention, and speculative-decoding flags it launches with.
 
 model_list:
-  - model_name: local-qwen
+  # litellm_params.model is "openai/<anything>" - the part after "openai/" is
+  # never sent to the backend as a real lookup key, llama-server ignores it
+  # entirely (it only ever serves the one model it was launched with). Do NOT
+  # put "qwen" (or any other real model-family name) in this string: litellm
+  # pattern-matches known family names against its own provider registry
+  # *before* honoring the explicit "openai/" prefix, which silently rerouted
+  # this to the ollama provider (localhost:11434, nothing listening there)
+  # instead of the api_base below. Confirmed by testing "openai/qwen-local"
+  # (broken, tried to hit ollama) vs "openai/local-llm" (works).
+  - model_name: local-llm
     litellm_params:
-      model: openai/qwen-local
+      model: openai/local-llm
       api_base: http://localhost:8080/v1
       api_key: "not-needed"   # llama-server has no auth unless --api-key is passed
 
@@ -28,7 +37,7 @@ model_list:
   # the proxy logs (enable log_level: DEBUG below to check).
   - model_name: claude-haiku-4-5
     litellm_params:
-      model: openai/qwen-local
+      model: openai/local-llm
       api_base: http://localhost:8080/v1
       api_key: "not-needed"
 
@@ -38,19 +47,19 @@ model_list:
   # a future Claude Code version could plausibly use either form.
   - model_name: claude-haiku-4-5-20251001
     litellm_params:
-      model: openai/qwen-local
+      model: openai/local-llm
       api_base: http://localhost:8080/v1
       api_key: "not-needed"
 
   - model_name: claude-sonnet-5
     litellm_params:
-      model: openai/qwen-local
+      model: openai/local-llm
       api_base: http://localhost:8080/v1
       api_key: "not-needed"
 
   - model_name: claude-opus-4-8
     litellm_params:
-      model: openai/qwen-local
+      model: openai/local-llm
       api_base: http://localhost:8080/v1
       api_key: "not-needed"
 

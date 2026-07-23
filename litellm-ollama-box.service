@@ -42,7 +42,13 @@ Type=simple
 # No ANTHROPIC_API_KEY needed, this config has no cloud model entries.
 ExecStart=/usr/bin/distrobox enter ollama-box -- /bin/bash -lc "exec litellm --config /home/%u/litellm_config.yaml --port 4000"
 
-ExecStop=/usr/bin/distrobox stop --yes ollama-box
+
+# NOT "distrobox stop ollama-box" - that stops the whole container, which
+# kills llama-server (started separately by start-local-llama.sh) as
+# collateral damage every time this service restarts or stops. Only kill
+# the litellm process itself; leave the container and anything else in it
+# (the model server) running.
+ExecStop=/usr/bin/distrobox enter ollama-box -- pkill -f "litellm --config"
 Restart=on-failure
 RestartSec=5
 

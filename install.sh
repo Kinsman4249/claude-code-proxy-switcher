@@ -415,7 +415,19 @@ if [ "$PROXY_DEBUG_LOG" = "yes" ]; then
 fi
 log "Wrote $CONFIG_DEST"
 
-# --- Step 2: install both systemd unit files, patched for port/path ---
+# --- Step 2: make sure litellm itself is installed inside the container ---
+# Must happen before Step 4 enables/starts the systemd service below: on a
+# fresh container (or a broken old setup where this got skipped somehow),
+# starting the service before litellm exists just crash-loops it.
+distrobox enter "$CONTAINER_NAME" -- bash -lc "
+  python3 -c 'import litellm' 2>/dev/null || {
+    python3 -m pip --version >/dev/null 2>&1 || sudo dnf install -y python3-pip
+    sudo python3 -m pip install 'litellm[proxy]' --break-system-packages -q
+  }
+"
+log "Confirmed litellm is installed inside $CONTAINER_NAME"
+
+# --- Step 3: install both systemd unit files, patched for port/path ---
 mkdir -p "$HOME/.config/systemd/user"
 
 backup_config "$HOME/.config/systemd/user/litellm-ollama-box.service"
@@ -423,8 +435,7 @@ backup_config "$HOME/.config/systemd/user/distrobox-reminder.service"
 
 sed -e "s|/home/%u/litellm_config.yaml|$CONFIG_DEST|" \
     -e "s/--port 4000/--port $PROXY_PORT/" \
-    -e "s/distrobox enter ollama-box/distrobox enter $CONTAINER_NAME/" \
-    -e "s/distrobox stop --yes ollama-box/distrobox stop --yes $CONTAINER_NAME/" \
+    -e "s/distrobox enter ollama-box/distrobox enter $CONTAINER_NAME/g" \
     "$SCRIPT_DIR/litellm-ollama-box.service" > "$HOME/.config/systemd/user/litellm-ollama-box.service"
 
 cp "$SCRIPT_DIR/distrobox-reminder.service" "$HOME/.config/systemd/user/distrobox-reminder.service"
@@ -432,12 +443,19 @@ cp "$SCRIPT_DIR/distrobox-reminder.service" "$HOME/.config/systemd/user/distrobo
 systemctl --user daemon-reload
 log "Installed and reloaded systemd units"
 
-# --- Step 3: enable both services ---
+# --- Step 4: enable both services ---
+# litellm-ollama-box.service: "enable --now" only starts it if it wasn't
+# already running - on a re-install over a broken old setup (stale config,
+# old ExecStop, whatever) the whole point is to force the fixed unit file
+# and config to actually take effect, so explicitly restart it too. This is
+# safe: ExecStop only kills the litellm process now, not the container, so
+# it will never take llama-server down with it.
 systemctl --user enable --now litellm-ollama-box.service
+systemctl --user restart litellm-ollama-box.service
 systemctl --user enable --now distrobox-reminder.service
-log "Enabled litellm-ollama-box.service and distrobox-reminder.service"
+log "Enabled litellm-ollama-box.service (restarted to apply any config/unit changes) and distrobox-reminder.service"
 
-# --- Step 4: lingering, if requested ---
+# --- Step 5: lingering, if requested ---
 if [ "$ENABLE_LINGER" = "yes" ]; then
   if [ -z "$LINGER_PRE_INSTALL_STATE" ]; then
     if loginctl show-user "$USER" --property=Linger 2>/dev/null | grep -q "=yes"; then
@@ -451,10 +469,15 @@ if [ "$ENABLE_LINGER" = "yes" ]; then
   log "Lingering enabled for $USER"
 fi
 
-# --- Step 5: verify the proxy came up ---
+# --- Step 6: verify the proxy came up ---
+# Auth header is required here: LiteLLM's own auth-failure error path throws
+# an unrelated ModuleNotFoundError (missing optional 'prisma' package, not
+# installed and not needed for this master-key-only setup) instead of a
+# clean 401 when a request arrives with no token, so an unauthenticated
+# health check gets a misleading 500 instead of a straight pass/fail.
 PROXY_UP=no
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  if curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PROXY_PORT/health" | grep -q "200"; then
+  if curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $PROXY_MASTER_KEY" "http://localhost:$PROXY_PORT/health" | grep -q "200"; then
     PROXY_UP=yes
     break
   fi
@@ -467,7 +490,7 @@ else
   echo "Check: systemctl --user status litellm-ollama-box.service" >&2
 fi
 
-# --- Step 6: install the toggle script, patched with port/token ---
+# --- Step 7: install the toggle script, patched with port/token ---
 mkdir -p "$BIN_DIR"
 sed -e "s|http://localhost:4000|http://localhost:$PROXY_PORT|g" \
     -e "s|http://localhost:8080|http://localhost:$LLAMA_PORT|g" \
@@ -482,7 +505,7 @@ case ":$PATH:" in
           "claude-local-toggle.sh by name instead of full path." ;;
 esac
 
-# --- Step 6b: desktop shortcut, if requested ---
+# --- Step 7b: desktop shortcut, if requested ---
 if [ "$INSTALL_DESKTOP_SHORTCUT" = "yes" ]; then
   # This wrapper flips whatever state you're currently in and confirms via
   # notify-send, since a desktop icon has no terminal to print to. It reads
@@ -502,7 +525,7 @@ if [ "$INSTALL_DESKTOP_SHORTCUT" = "yes" ]; then
   echo "and it won't ask again."
 fi
 
-# --- Step 7: make sure llama-server exists inside the container, building it if not ---
+# --- Step 8: make sure llama-server exists inside the container, building it if not ---
 # Ollama bundles its own runtime; llama-server has to be compiled. This is a
 # one-time cost per container - once LLAMA_SERVER_BIN is cached in CONF_FILE,
 # re-runs skip straight past it.
@@ -597,7 +620,7 @@ else
   log "Using cached llama-server path: $LLAMA_SERVER_BIN"
 fi
 
-# --- Step 8: download the model, inside the container ---
+# --- Step 9: download the model, inside the container ---
 LLAMA_MODEL_PATH=""
 if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
   echo "Checking whether a *$GGUF_PATTERN*.gguf file is already downloaded inside $CONTAINER_NAME..."
@@ -628,7 +651,7 @@ else
   echo "Skipped model download. Run this script again with 'yes' when ready."
 fi
 
-# --- Step 9: generate start-local-llama.sh with all the tuning flags baked in ---
+# --- Step 10: generate start-local-llama.sh with all the tuning flags baked in ---
 if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
   # Optional VRAM-headroom flags (see the prompts above): neither is on by
   # default, both trade some speed for more room when the quant/context
@@ -671,8 +694,14 @@ if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
 # -b $LLAMA_BATCH_SIZE               batch size (llama.cpp's own default is 512)
 $([ -n "$OT_ARGS" ] && echo "# --override-tensor          last $LLAMA_CPU_FFN_LAYERS layers' FFN weights forced to CPU RAM")
 $([ -n "$KVOFFLOAD_ARGS" ] && echo "# --no-kv-offload            whole KV cache kept in system RAM instead of VRAM")
+# LOG_FILE            every run's output also goes here (overwritten each
+#                      start, not appended) so a crash is diagnosable even if
+#                      it happened in a terminal window that already closed.
 #
 # Runs in the foreground so you can watch its own log output. Ctrl+C to stop.
+LOG_FILE="\$HOME/.local/state/llama-server.log"
+mkdir -p "\$(dirname "\$LOG_FILE")"
+
 if curl -s -o /dev/null "http://127.0.0.1:$LLAMA_PORT/health"; then
   echo "llama-server is already running at http://127.0.0.1:$LLAMA_PORT - not starting a second one."
   echo "(If you meant to restart it, stop the running one first: Ctrl+C in its terminal, or"
@@ -680,7 +709,7 @@ if curl -s -o /dev/null "http://127.0.0.1:$LLAMA_PORT/health"; then
   exit 0
 fi
 
-exec distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
+distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
   -m "$LLAMA_MODEL_PATH" \\
   -ngl 99 \\
   -c $LLAMA_CTX_SIZE \\
@@ -690,7 +719,8 @@ exec distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
   --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N \\
   --fit off \\
   --no-webui \\
-  --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS
+  --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS \\
+  2>&1 | tee "\$LOG_FILE"
 EOF
   chmod +x "$BIN_DIR/start-local-llama.sh"
   log "Generated $BIN_DIR/start-local-llama.sh"
@@ -775,6 +805,35 @@ EOF
       echo "VRAM after loading:"
       nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader
     fi
+
+    # --- Smoke test: a real completion through the PROXY, using the exact
+    # model string Claude Code sends (see litellm_config.yaml), not just a
+    # /health 200. /health only proves the process is listening; it does not
+    # prove the model routing is correct or that a request actually returns
+    # text - both of which have separately broken silently in the past.
+    echo
+    echo "Smoke-testing a real completion through the proxy (this is what Claude Code will see)..."
+    SMOKE_RESPONSE="$(curl -s -X POST "http://localhost:$PROXY_PORT/v1/chat/completions" \
+      -H "Authorization: Bearer $PROXY_MASTER_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"reply with the word: ok"}],"max_tokens":10}')"
+    SMOKE_CONTENT="$(python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.argv[1])
+    msg = data['choices'][0]['message']
+    print((msg.get('content') or msg.get('reasoning_content') or '').strip())
+except Exception:
+    sys.exit(1)
+" "$SMOKE_RESPONSE" 2>/dev/null)"
+    if [ -n "$SMOKE_CONTENT" ]; then
+      echo "Smoke test OK - proxy returned real model output: \"$SMOKE_CONTENT\""
+    else
+      echo "WARNING: smoke test through the proxy did not return usable content." >&2
+      echo "Raw response: $SMOKE_RESPONSE" >&2
+      echo "Claude Code will likely hang or error in local mode until this is fixed." >&2
+      echo "Check: journalctl --user -u litellm-ollama-box.service -n 50" >&2
+    fi
   else
     echo "WARNING: llama-server did not respond at http://localhost:$LLAMA_PORT/health." >&2
     echo "Check the terminal window it's running in for the actual error." >&2
@@ -783,15 +842,6 @@ else
   echo "Skipping start-local-llama.sh generation: missing llama-server binary or model path."
   echo "Re-run install.sh once both the build and the download have succeeded."
 fi
-
-# --- Step 10: make sure litellm itself is installed inside the container ---
-distrobox enter "$CONTAINER_NAME" -- bash -lc "
-  python3 -c 'import litellm' 2>/dev/null || {
-    python3 -m pip --version >/dev/null 2>&1 || sudo dnf install -y python3-pip
-    sudo python3 -m pip install 'litellm[proxy]' --break-system-packages -q
-  }
-"
-log "Confirmed litellm is installed inside $CONTAINER_NAME"
 
 echo
 echo "== Done =="
