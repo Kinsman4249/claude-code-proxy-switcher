@@ -663,6 +663,11 @@ if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
 #                          harmless but alarming-looking "common_fit_params:
 #                          ... abort" warning on every startup (see
 #                          https://github.com/ggml-org/llama.cpp/discussions/18049)
+# --no-webui              disable llama.cpp's built-in browser chat UI - you
+#                          only talk to this server through Claude Code /
+#                          the API, never a browser, so there's no reason to
+#                          serve it (doesn't touch VRAM either way, it's just
+#                          static asset serving on the same HTTP listener)
 # -b $LLAMA_BATCH_SIZE               batch size (llama.cpp's own default is 512)
 $([ -n "$OT_ARGS" ] && echo "# --override-tensor          last $LLAMA_CPU_FFN_LAYERS layers' FFN weights forced to CPU RAM")
 $([ -n "$KVOFFLOAD_ARGS" ] && echo "# --no-kv-offload            whole KV cache kept in system RAM instead of VRAM")
@@ -684,6 +689,7 @@ exec distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
   --cache-type-k q8_0 --cache-type-v q8_0 \\
   --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N \\
   --fit off \\
+  --no-webui \\
   --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS
 EOF
   chmod +x "$BIN_DIR/start-local-llama.sh"
@@ -755,6 +761,7 @@ EOF
   echo "    -fa on --cache-type-k q8_0 --cache-type-v q8_0 \\"
   echo "    --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N \\"
   echo "    --fit off \\"
+  echo "    --no-webui \\"
   echo "    --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS"
   echo
   echo "Or just: $BIN_DIR/start-local-llama.sh"
