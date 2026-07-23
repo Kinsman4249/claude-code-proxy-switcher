@@ -1,0 +1,105 @@
+# =============================================================================
+# Release workflow (claude-code-proxy-switcher)
+# =============================================================================
+#
+# WHAT THIS REPO IS
+# -----------------
+# A shell-script installer and toggle scripts, plus config/systemd-unit files.
+# There is nothing to compile, so this workflow does NOT build binaries. On a
+# version tag it bundles the tracked repo contents into versioned source
+# archives and attaches them to a GitHub Release.
+#
+# ACTION PINNING
+# --------------
+# The uses: lines are left on clean version tags, not commit SHAs. SHA pinning
+# is optional here; if adopted, run pinact from the repo root and add a
+# .github/dependabot.yml (github-actions ecosystem) to keep the pins current.
+#
+# CUTTING A RELEASE
+# -----------------
+#     git tag v1.2.0
+#     git push origin v1.2.0
+#
+# RUNNING MANUALLY
+# ----------------
+# Actions tab > Release > Run workflow > enter an existing tag name.
+# =============================================================================
+
+name: Release
+
+on:
+  # Auto-trigger when a version tag like v0.1.0 / v1.2.3 is pushed.
+  push:
+    tags:
+      - 'v*.*.*'
+  # Manual fallback: re-run a release for an already-existing tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v1.0.0). Must already exist.'
+        required: true
+        type: string
+
+# Least privilege: default all jobs to read-only. The release job elevates to
+# write only where it actually needs to publish.
+permissions:
+  contents: read
+
+# Stop two runs for the same tag from racing (e.g. a re-pushed tag while the
+# first run is still publishing). Do not cancel an in-flight publish.
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Package and release
+    runs-on: ubuntu-latest
+
+    # Single OS is correct here. git archive output is byte-identical on every
+    # runner, so a build matrix would only produce duplicate files and burn
+    # extra minutes. This repo has no per-platform binaries to build.
+
+    # Scoped elevation: this job needs write access to create the Release.
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          # On a tag push, github.ref is the pushed tag. On a manual run, use the
+          # tag name the operator typed into the workflow_dispatch input.
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          # git archive reads the checked-out tree. Full history is not strictly
+          # required, but fetch-depth: 0 guarantees the tag ref resolves cleanly.
+          fetch-depth: 0
+
+      - name: Build source archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Resolve the tag for both trigger types (push vs manual dispatch).
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          # Top-level folder inside each archive, e.g. claude-code-proxy-switcher-v1.2.0/
+          name="${{ github.event.repository.name }}-${tag}"
+          mkdir -p dist
+          # git archive produces a clean snapshot of exactly the tagged commit.
+          # It honors .gitattributes export rules and excludes the .git directory.
+          git archive --format=tar.gz --prefix="${name}/" -o "dist/${name}.tar.gz" HEAD
+          git archive --format=zip    --prefix="${name}/" -o "dist/${name}.zip"    HEAD
+          echo "Built archives:"
+          ls -l dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          # Auto-generate notes from merged PRs / commits since the previous tag.
+          generate_release_notes: true
+          # Attach the two source archives built in the previous step.
+          files: dist/*
+          # Fail loudly if the glob matches nothing, so a broken build step
+          # cannot silently publish an empty release.
+          fail_on_unmatched_files: true
