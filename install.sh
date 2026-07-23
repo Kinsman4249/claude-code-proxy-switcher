@@ -657,11 +657,24 @@ if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
 # -fa on                  flash attention (required for KV cache quant below)
 # --cache-type-k/v q8_0   Q8 KV cache quantization, halves KV cache VRAM cost
 # --spec-type draft-mtp   self-speculative decoding via the model's MTP head
+# --fit off               disable llama.cpp's automatic VRAM-fitting pass: it
+#                          can't override the manual -ngl/--override-tensor
+#                          budget below, so left on it only produces a
+#                          harmless but alarming-looking "common_fit_params:
+#                          ... abort" warning on every startup (see
+#                          https://github.com/ggml-org/llama.cpp/discussions/18049)
 # -b $LLAMA_BATCH_SIZE               batch size (llama.cpp's own default is 512)
 $([ -n "$OT_ARGS" ] && echo "# --override-tensor          last $LLAMA_CPU_FFN_LAYERS layers' FFN weights forced to CPU RAM")
 $([ -n "$KVOFFLOAD_ARGS" ] && echo "# --no-kv-offload            whole KV cache kept in system RAM instead of VRAM")
 #
 # Runs in the foreground so you can watch its own log output. Ctrl+C to stop.
+if curl -s -o /dev/null "http://127.0.0.1:$LLAMA_PORT/health"; then
+  echo "llama-server is already running at http://127.0.0.1:$LLAMA_PORT - not starting a second one."
+  echo "(If you meant to restart it, stop the running one first: Ctrl+C in its terminal, or"
+  echo "pkill -f llama-server inside the $CONTAINER_NAME container.)"
+  exit 0
+fi
+
 exec distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
   -m "$LLAMA_MODEL_PATH" \\
   -ngl 99 \\
@@ -670,6 +683,7 @@ exec distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
   -fa on \\
   --cache-type-k q8_0 --cache-type-v q8_0 \\
   --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N \\
+  --fit off \\
   --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS
 EOF
   chmod +x "$BIN_DIR/start-local-llama.sh"
@@ -740,6 +754,7 @@ EOF
   echo "    -ngl 99 -c $LLAMA_CTX_SIZE -b $LLAMA_BATCH_SIZE \\"
   echo "    -fa on --cache-type-k q8_0 --cache-type-v q8_0 \\"
   echo "    --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N \\"
+  echo "    --fit off \\"
   echo "    --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS"
   echo
   echo "Or just: $BIN_DIR/start-local-llama.sh"
