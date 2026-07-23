@@ -53,7 +53,7 @@ case "$ACTION" in
       exit 1
     fi
 
-    if ! curl -s -o /dev/null -w "%{http_code}" "$PROXY_URL/health" | grep -q "200"; then
+    if ! curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $PROXY_TOKEN" "$PROXY_URL/health" | grep -q "200"; then
       echo "Warning: proxy not responding at $PROXY_URL." >&2
       echo "Check: systemctl --user status litellm-ollama-box.service" >&2
       if [ "$FORCE" != "--force" ]; then
