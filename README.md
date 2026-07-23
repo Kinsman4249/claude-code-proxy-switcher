@@ -24,14 +24,16 @@ chmod +x install.sh
 ./install.sh
 ```
 
-The installer is interactive: it asks about your container name, proxy port and token, whether to download the model now, whether to enable systemd lingering, and whether to install a desktop toggle icon. Every answer is saved to `~/.config/claude-local-setup.conf` and shown as the default on the next run, so re-running the installer is mostly pressing Enter.
+The installer is interactive: it asks about your container name, proxy port and token, whether to enable systemd lingering, which quantization to use and what context length to build with, and whether to install a desktop toggle icon. Every answer is saved to `~/.config/claude-local-setup.conf` and shown as the default on the next run, so re-running the installer is mostly pressing Enter.
+
+Changing quant or context length later doesn't require editing any file: re-run `install.sh`, pick different numbers at the two model-related prompts, and it rebuilds the Ollama tag from a freshly generated Modelfile, skipping the download if that quant is already on disk. After building, it loads the model once and prints real VRAM usage from `ollama ps` and `nvidia-smi`, so you know immediately whether a given quant/context combination actually fits, rather than finding out from a truncated prompt mid-session.
 
 ## What's in this repo
 
 ```
 .
 |-- litellm_config.yaml            - LiteLLM proxy config, local-only, no API key, no cloud entries
-|-- local-model.Modelfile           - builds the Ollama tag from Qwen3.5-9B (UD-Q5_K_XL, text-only, 20K context)
+|-- local-model.Modelfile           - reference Modelfile for manual builds (install.sh generates its own with your chosen quant/context)
 |-- litellm-ollama-box.service      - systemd --user unit, starts only the proxy at login, no model auto-load
 |-- distrobox-reminder.service      - systemd --user unit, login notification reminding you to stop the container before gaming
 |-- claude-local-toggle.sh          - the actual switch: on/off/status, edits ~/.claude/settings.json

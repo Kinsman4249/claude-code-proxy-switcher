@@ -39,6 +39,8 @@ DOWNLOAD_MODEL_NOW="${DOWNLOAD_MODEL_NOW:-yes}"
 GGUF_FILENAME="${GGUF_FILENAME:-Qwen3.5-9B-UD-Q5_K_XL.gguf}"
 HF_REPO="${HF_REPO:-unsloth/Qwen3.5-9B-GGUF}"
 OLLAMA_MODEL_TAG="${OLLAMA_MODEL_TAG:-local-qwen35-coder-cc}"
+OLLAMA_NUM_CTX="${OLLAMA_NUM_CTX:-32768}"
+QUANT_CHOICE="${QUANT_CHOICE:-5}"
 PROXY_DEBUG_LOG="${PROXY_DEBUG_LOG:-no}"
 PROXY_LOG_DEST="${PROXY_LOG_DEST:-console}"                # console or disk
 PROXY_LOG_FILE="${PROXY_LOG_FILE:-/var/log/litellm-proxy.log}"
@@ -70,6 +72,8 @@ DOWNLOAD_MODEL_NOW="$DOWNLOAD_MODEL_NOW"
 GGUF_FILENAME="$GGUF_FILENAME"
 HF_REPO="$HF_REPO"
 OLLAMA_MODEL_TAG="$OLLAMA_MODEL_TAG"
+OLLAMA_NUM_CTX="$OLLAMA_NUM_CTX"
+QUANT_CHOICE="$QUANT_CHOICE"
 PROXY_DEBUG_LOG="$PROXY_DEBUG_LOG"
 PROXY_LOG_DEST="$PROXY_LOG_DEST"
 PROXY_LOG_FILE="$PROXY_LOG_FILE"
@@ -105,10 +109,39 @@ ask BIN_DIR "Directory to install claude-local-toggle.sh into"
 ask PROXY_PORT "LiteLLM proxy port"
 ask PROXY_MASTER_KEY "Proxy auth token (used as ANTHROPIC_AUTH_TOKEN)"
 ask ENABLE_LINGER "Enable systemd lingering so proxy starts before login too? (yes/no)"
-ask DOWNLOAD_MODEL_NOW "Download the Qwen3.5-9B model now? (yes/no, big download)"
+ask DOWNLOAD_MODEL_NOW "Download/rebuild the local model now? (yes/no, big download if not already cached)"
 if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
-  ask GGUF_FILENAME "Exact GGUF filename (check the repo listing if unsure)"
+  echo
+  echo "Which quantization? All are Qwen3.5-9B from unsloth/Qwen3.5-9B-GGUF."
+  echo "Larger = better quality, more VRAM. Your card has ~7.7 GB usable."
+  echo "  1) Q4_K_M      5.68 GB  (most VRAM headroom for a bigger context)"
+  echo "  2) UD-Q4_K_XL  5.97 GB  (Unsloth dynamic quant, better quality at similar size)"
+  echo "  3) Q5_K_S      6.36 GB"
+  echo "  4) Q5_K_M      6.58 GB  (floor recommended for coding/tool-calling precision)"
+  echo "  5) UD-Q5_K_XL  6.74 GB  (previous default, best quality that still leaves headroom)"
+  echo "  6) Q6_K        7.46 GB  (best quality, very little room left for context)"
+  echo "  7) custom      (type your own filename)"
+  ask QUANT_CHOICE "Pick a number"
+  case "$QUANT_CHOICE" in
+    1) GGUF_FILENAME="Qwen3.5-9B-Q4_K_M.gguf" ;;
+    2) GGUF_FILENAME="Qwen3.5-9B-UD-Q4_K_XL.gguf" ;;
+    3) GGUF_FILENAME="Qwen3.5-9B-Q5_K_S.gguf" ;;
+    4) GGUF_FILENAME="Qwen3.5-9B-Q5_K_M.gguf" ;;
+    5) GGUF_FILENAME="Qwen3.5-9B-UD-Q5_K_XL.gguf" ;;
+    6) GGUF_FILENAME="Qwen3.5-9B-Q6_K.gguf" ;;
+    7) ask GGUF_FILENAME "Exact GGUF filename (check the repo listing if unsure)" ;;
+    "") ;;  # empty input keeps whatever GGUF_FILENAME already was (saved default)
+    *) echo "Didn't recognize that, keeping $GGUF_FILENAME" ;;
+  esac
   ask HF_REPO "Hugging Face repo"
+
+  echo
+  echo "Context window (num_ctx). Larger lets Claude Code's full prompt fit"
+  echo "without truncation, but costs more VRAM on top of the quant above."
+  echo "  20480 was the previous default and truncated on real Claude Code"
+  echo "  requests (system prompt + tool schemas alone can be tens of"
+  echo "  thousands of tokens). 32768 or higher is worth trying first."
+  ask OLLAMA_NUM_CTX "Context length in tokens"
 fi
 ask OLLAMA_MODEL_TAG "Ollama tag name to build"
 ask PROXY_DEBUG_LOG "Enable verbose LiteLLM proxy logging? (yes/no)"
@@ -238,21 +271,31 @@ fi
 
 # --- Step 7: download the model and build the Ollama tag, inside the container ---
 if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
-  echo "Downloading $GGUF_FILENAME from $HF_REPO inside $CONTAINER_NAME, this is a multi-GB download..."
-  distrobox enter "$CONTAINER_NAME" -- bash -lc "
-    (python3 -m pip --version >/dev/null 2>&1 || sudo dnf install -y python3-pip) &&
-    sudo python3 -m pip install -U huggingface_hub --break-system-packages -q &&
-    hf download '$HF_REPO' --include '$GGUF_FILENAME' --local-dir ~/
-  "
-  if [ $? -ne 0 ]; then
-    echo "WARNING: model download failed. Check the exact filename on the repo's" >&2
-    echo "file listing and re-run this script, or run the hf download command" >&2
-    echo "manually inside the container." >&2
+  echo "Checking whether $GGUF_FILENAME is already downloaded inside $CONTAINER_NAME..."
+  ALREADY_HAVE="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "find ~ -maxdepth 3 -iname '$GGUF_FILENAME' 2>/dev/null | head -n1")"
+
+  if [ -n "$ALREADY_HAVE" ]; then
+    echo "Already have it at $ALREADY_HAVE, skipping download."
   else
-    log "Downloaded $GGUF_FILENAME"
+    echo "Downloading $GGUF_FILENAME from $HF_REPO inside $CONTAINER_NAME, this is a multi-GB download..."
+    distrobox enter "$CONTAINER_NAME" -- bash -lc "
+      (python3 -m pip --version >/dev/null 2>&1 || sudo dnf install -y python3-pip) &&
+      sudo python3 -m pip install -U huggingface_hub --break-system-packages -q &&
+      hf download '$HF_REPO' --include '$GGUF_FILENAME' --local-dir ~/
+    "
+    if [ $? -ne 0 ]; then
+      echo "WARNING: model download failed. Check the exact filename on the repo's" >&2
+      echo "file listing and re-run this script, or run the hf download command" >&2
+      echo "manually inside the container." >&2
+    else
+      log "Downloaded $GGUF_FILENAME"
+    fi
   fi
 
-  echo "Building Ollama tag $OLLAMA_MODEL_TAG..."
+  echo "Building Ollama tag $OLLAMA_MODEL_TAG (num_ctx=$OLLAMA_NUM_CTX)..."
+  # The Modelfile is generated fresh here rather than reusing the static
+  # local-model.Modelfile, so num_ctx and the quant choice above always match
+  # what you actually picked, no manual file editing needed to try options.
   distrobox enter "$CONTAINER_NAME" -- bash -lc "
     set -e
     GGUF_PATH=\$(find ~ -maxdepth 3 -iname '$GGUF_FILENAME' 2>/dev/null | head -n1)
@@ -260,19 +303,41 @@ if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
       echo 'ERROR: could not locate $GGUF_FILENAME anywhere under home. Check the download step above.' >&2
       exit 1
     fi
-    echo \"Found downloaded model at: \$GGUF_PATH\"
-    sed \"s|^FROM .*|FROM \$GGUF_PATH|\" '$SCRIPT_DIR/local-model.Modelfile' > /tmp/local-model.resolved.Modelfile
-    ollama create '$OLLAMA_MODEL_TAG' -f /tmp/local-model.resolved.Modelfile
+    echo \"Building from: \$GGUF_PATH\"
+    cat > /tmp/local-model.generated.Modelfile << MODELFILE_EOF
+FROM \$GGUF_PATH
+PARAMETER num_ctx $OLLAMA_NUM_CTX
+PARAMETER num_keep 24
+MODELFILE_EOF
+    ollama create '$OLLAMA_MODEL_TAG' -f /tmp/local-model.generated.Modelfile
   "
-  if [ $? -ne 0 ]; then
-    echo "WARNING: 'ollama create' failed. Confirm the .gguf file and Modelfile" >&2
-    echo "are both accessible inside the container, then retry manually." >&2
+  BUILD_STATUS=$?
+  if [ $BUILD_STATUS -ne 0 ]; then
+    echo "WARNING: 'ollama create' failed. Confirm the .gguf file is accessible" >&2
+    echo "inside the container, then retry manually." >&2
   else
     log "Built Ollama tag $OLLAMA_MODEL_TAG"
+
+    # --- Quick smoke test + real VRAM reading, so you know immediately ---
+    # --- whether this quant/context combination actually fits. ---
+    echo "Loading the model once to check real VRAM usage (this takes a few seconds)..."
+    distrobox enter "$CONTAINER_NAME" -- bash -lc "
+      ollama run '$OLLAMA_MODEL_TAG' 'Reply with OK and nothing else.' 2>/dev/null
+      echo
+      echo 'VRAM after loading:'
+      ollama ps
+      if command -v nvidia-smi >/dev/null 2>&1; then
+        nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader
+      fi
+    "
+    echo
+    echo "If that used more VRAM than you're comfortable with, or 'ollama ps'"
+    echo "shows it running partly on CPU instead of the GPU, re-run this script"
+    echo "and pick a smaller quant or a lower context length. Nothing above"
+    echo "needs hand-editing, both are just prompts."
   fi
 else
-  echo "Skipped model download/build. Run this script again with 'yes' when ready," \
-       "or do it manually per local-model.Modelfile."
+  echo "Skipped model download/build. Run this script again with 'yes' when ready."
 fi
 
 # --- Step 8: make sure litellm itself is installed inside the container ---
