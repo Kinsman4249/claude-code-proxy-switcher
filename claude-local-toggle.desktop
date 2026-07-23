@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Local Toggle
+Comment=Switch Claude Code between local Qwen and Pro subscription
+Exec=/home/YOUR_USERNAME/.local/bin/claude-local-desktop-toggle.sh
+Icon=network-server
+Terminal=false
+Categories=Utility;

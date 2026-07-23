@@ -1,0 +1,50 @@
+# litellm-ollama-box.service
+# Host-side systemd USER service (not inside the container). Distrobox
+# containers share your home directory, so hooking .bashrc for autostart
+# would fire in every container you have, not just ollama-box. A systemd
+# unit on the host that calls into the container avoids that.
+#
+# This starts ONLY the LiteLLM proxy inside ollama-box. It does NOT run
+# "ollama serve" and does NOT load any model. The proxy config is local-only
+# (no cloud entries, no ANTHROPIC_API_KEY needed anywhere), so leaving this
+# running all the time costs nothing and bills nothing on its own. Whether
+# Claude Code actually talks to it is controlled separately by
+# claude-local-toggle.sh.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp litellm-ollama-box.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now litellm-ollama-box.service
+#
+# To make this survive an actual machine boot (not just login), see
+# setup-directions.md for the loginctl enable-linger step.
+#
+# Check status / logs:
+#   systemctl --user status litellm-ollama-box.service
+#   journalctl --user -u litellm-ollama-box.service -f
+#
+# When you actually want the local model available, enter the container
+# yourself and start it manually:
+#   distrobox enter ollama-box
+#   ollama serve
+
+[Unit]
+Description=LiteLLM proxy inside ollama-box distrobox (local-only, no cloud)
+After=network.target
+
+[Service]
+Type=simple
+
+# Edit the path to litellm_config.yaml to wherever you actually saved it.
+# No ANTHROPIC_API_KEY needed, this config has no cloud model entries.
+ExecStart=/usr/bin/distrobox enter ollama-box -- /bin/bash -lc "exec litellm --config /home/%u/litellm_config.yaml --port 4000"
+
+ExecStop=/usr/bin/distrobox stop --yes ollama-box
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+
+

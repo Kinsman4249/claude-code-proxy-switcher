@@ -1,0 +1,44 @@
+# litellm_config.yaml
+# LOCAL-ONLY proxy config. No cloud model entries, no ANTHROPIC_API_KEY
+# anywhere, no fallback. When this proxy is active (see claude-local-toggle.sh)
+# every model name Claude Code might send gets mapped to the same local Qwen
+# backend. If Ollama isn't serving, requests fail cleanly with a connection
+# error, they do not silently fall through to a billed cloud call.
+#
+# This intentionally means Sonnet/Opus are NOT available while local mode is
+# on. That's the tradeoff: local mode is for small, cheap tasks you're happy
+# running on a 7B model. For real work (releases, anything needing Sonnet or
+# Opus), switch local mode off and Claude Code goes back to your normal Pro
+# subscription auth, untouched, same as if this whole setup didn't exist.
+
+model_list:
+  - model_name: local-qwen
+    litellm_params:
+      model: ollama/local-qwen35-coder-cc   # built from Modelfile, see directions
+      api_base: http://localhost:11434
+
+  # Map every model alias/full-ID Claude Code might send to the same local
+  # backend, so nothing errors due to an unmapped model name while local
+  # mode is on. Add more lines here if you see a different model string in
+  # the proxy logs (enable log_level: DEBUG below to check).
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: ollama/local-qwen35-coder-cc
+      api_base: http://localhost:11434
+
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: ollama/local-qwen35-coder-cc
+      api_base: http://localhost:11434
+
+  - model_name: claude-opus-4-8
+    litellm_params:
+      model: ollama/local-qwen35-coder-cc
+      api_base: http://localhost:11434
+
+general_settings:
+  master_key: sk-local-dev-key   # change this; used as ANTHROPIC_AUTH_TOKEN
+  # Uncomment to see exactly what model string Claude Code is sending, useful
+  # for catching a request that doesn't match any model_name above:
+  # log_level: DEBUG
+  # log_file: /var/log/litellm-proxy.log
