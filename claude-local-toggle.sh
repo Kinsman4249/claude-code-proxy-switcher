@@ -14,8 +14,16 @@
 #
 # Usage:
 #   ./claude-local-toggle.sh on
+#   ./claude-local-toggle.sh on --force   # turn on even if llama-server isn't reachable
 #   ./claude-local-toggle.sh off
 #   ./claude-local-toggle.sh status
+#
+# "on" refuses to flip the switch unless llama-server itself (not just the
+# LiteLLM proxy) is actually answering, since the proxy is always running via
+# systemd regardless of whether the model is loaded, and it will happily
+# report itself healthy while pointed at a backend nobody started yet.
+# --force skips that check, for deliberately testing the clean-failure path
+# (see README's Manual verification section).
 #
 # After toggling, reload the VS Code/VSCodium window (Ctrl+Shift+P >
 # "Reload Window") so the extension re-reads settings.json. The extension
@@ -27,24 +35,38 @@ SETTINGS_FILE="$HOME/.claude/settings.json"
 BACKUP_FILE="$HOME/.claude/settings.json.pre-local-toggle.bak"
 PROXY_URL="http://localhost:4000"
 PROXY_TOKEN="sk-local-dev-key"   # must match master_key in litellm_config.yaml
+LLAMA_URL="http://localhost:8080"   # must match the port start-local-llama.sh serves on
 
 ACTION="${1:-}"
+FORCE="${2:-}"
 
 mkdir -p "$(dirname "$SETTINGS_FILE")"
 [ -f "$SETTINGS_FILE" ] || echo '{}' > "$SETTINGS_FILE"
 
 case "$ACTION" in
   on)
-    # Back up whatever's there now, once, so "off" can always get back to a
-    # known-good state even if this script is run repeatedly.
-    if [ ! -f "$BACKUP_FILE" ]; then
-      cp "$SETTINGS_FILE" "$BACKUP_FILE"
+    if [ "$FORCE" != "--force" ] && ! curl -s -o /dev/null -w "%{http_code}" "$LLAMA_URL/health" | grep -q "200"; then
+      echo "ERROR: llama-server isn't responding at $LLAMA_URL." >&2
+      echo "Start it first: ~/.local/bin/start-local-llama.sh" >&2
+      echo "Not touching settings.json. Re-run with 'on --force' to switch on anyway" >&2
+      echo "(useful only for deliberately testing the clean-failure path)." >&2
+      exit 1
     fi
 
     if ! curl -s -o /dev/null -w "%{http_code}" "$PROXY_URL/health" | grep -q "200"; then
       echo "Warning: proxy not responding at $PROXY_URL." >&2
       echo "Check: systemctl --user status litellm-ollama-box.service" >&2
-      echo "Turning local mode on anyway, but Claude Code will fail until the proxy is up." >&2
+      if [ "$FORCE" != "--force" ]; then
+        echo "Not touching settings.json. Re-run with 'on --force' to switch on anyway." >&2
+        exit 1
+      fi
+      echo "Turning local mode on anyway (--force), but Claude Code will fail until the proxy is up." >&2
+    fi
+
+    # Back up whatever's there now, once, so "off" can always get back to a
+    # known-good state even if this script is run repeatedly.
+    if [ ! -f "$BACKUP_FILE" ]; then
+      cp "$SETTINGS_FILE" "$BACKUP_FILE"
     fi
 
     python3 - "$SETTINGS_FILE" "$PROXY_URL" "$PROXY_TOKEN" << 'PYEOF'
@@ -92,6 +114,11 @@ if env.get("ANTHROPIC_BASE_URL"):
 else:
     print("Local mode is OFF, using normal Pro subscription auth.")
 PYEOF
+    if curl -s -o /dev/null -w "%{http_code}" "$LLAMA_URL/health" | grep -q "200"; then
+      echo "llama-server: reachable at $LLAMA_URL"
+    else
+      echo "llama-server: NOT reachable at $LLAMA_URL (start-local-llama.sh not running?)"
+    fi
     ;;
 
   *)

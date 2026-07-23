@@ -2,20 +2,25 @@
 # LOCAL-ONLY proxy config. No cloud model entries, no ANTHROPIC_API_KEY
 # anywhere, no fallback. When this proxy is active (see claude-local-toggle.sh)
 # every model name Claude Code might send gets mapped to the same local Qwen
-# backend. If Ollama isn't serving, requests fail cleanly with a connection
-# error, they do not silently fall through to a billed cloud call.
+# backend. If llama-server isn't serving, requests fail cleanly with a
+# connection error, they do not silently fall through to a billed cloud call.
 #
 # This intentionally means Sonnet/Opus are NOT available while local mode is
 # on. That's the tradeoff: local mode is for small, cheap tasks you're happy
-# running on a 7B model. For real work (releases, anything needing Sonnet or
+# running on a 9B model. For real work (releases, anything needing Sonnet or
 # Opus), switch local mode off and Claude Code goes back to your normal Pro
 # subscription auth, untouched, same as if this whole setup didn't exist.
+#
+# Backend is llama-server's OpenAI-compatible endpoint (not Ollama), started
+# via start-local-llama.sh, see install.sh/README for the n-cpu-moe, KV
+# cache, flash attention, and speculative-decoding flags it launches with.
 
 model_list:
   - model_name: local-qwen
     litellm_params:
-      model: ollama/local-qwen35-coder-cc   # built from Modelfile, see directions
-      api_base: http://localhost:11434
+      model: openai/qwen-local
+      api_base: http://localhost:8080/v1
+      api_key: "not-needed"   # llama-server has no auth unless --api-key is passed
 
   # Map every model alias/full-ID Claude Code might send to the same local
   # backend, so nothing errors due to an unmapped model name while local
@@ -23,8 +28,9 @@ model_list:
   # the proxy logs (enable log_level: DEBUG below to check).
   - model_name: claude-haiku-4-5
     litellm_params:
-      model: ollama/local-qwen35-coder-cc
-      api_base: http://localhost:11434
+      model: openai/qwen-local
+      api_base: http://localhost:8080/v1
+      api_key: "not-needed"
 
   # Claude Code actually sends this exact dated string for Haiku, not the
   # short alias above. Confirmed via a live 400 error: "Invalid model name
@@ -32,18 +38,21 @@ model_list:
   # a future Claude Code version could plausibly use either form.
   - model_name: claude-haiku-4-5-20251001
     litellm_params:
-      model: ollama/local-qwen35-coder-cc
-      api_base: http://localhost:11434
+      model: openai/qwen-local
+      api_base: http://localhost:8080/v1
+      api_key: "not-needed"
 
   - model_name: claude-sonnet-5
     litellm_params:
-      model: ollama/local-qwen35-coder-cc
-      api_base: http://localhost:11434
+      model: openai/qwen-local
+      api_base: http://localhost:8080/v1
+      api_key: "not-needed"
 
   - model_name: claude-opus-4-8
     litellm_params:
-      model: ollama/local-qwen35-coder-cc
-      api_base: http://localhost:11434
+      model: openai/qwen-local
+      api_base: http://localhost:8080/v1
+      api_key: "not-needed"
 
 general_settings:
   master_key: sk-local-dev-key   # change this; used as ANTHROPIC_AUTH_TOKEN
