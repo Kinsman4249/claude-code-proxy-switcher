@@ -67,6 +67,11 @@ PROXY_LOG_DEST="${PROXY_LOG_DEST:-console}"                # console or disk
 PROXY_LOG_FILE="${PROXY_LOG_FILE:-/var/log/litellm-proxy.log}"
 INSTALL_DESKTOP_SHORTCUT="${INSTALL_DESKTOP_SHORTCUT:-yes}"
 DESKTOP_DIR="${DESKTOP_DIR:-$HOME/Desktop}"
+# Whether systemd lingering was already on before install.sh ever touched
+# it, recorded once on first install so uninstall.sh knows whether turning
+# it off again is safe (i.e. we turned it on) or would undo something the
+# user had set up themselves for unrelated reasons.
+LINGER_PRE_INSTALL_STATE="${LINGER_PRE_INSTALL_STATE:-}"
 
 log() {
   if [ "$INSTALL_VERBOSE" = "yes" ]; then
@@ -75,6 +80,18 @@ log() {
     else
       echo "[install] $*" >&2
     fi
+  fi
+}
+
+# Backs up a pre-existing file the first time we're about to overwrite it,
+# so uninstall.sh can put back whatever was there before install.sh ever
+# ran. Only fires once - re-running install.sh on top of its own previous
+# output must not clobber the original backup with our own generated file.
+backup_config() {
+  local target="$1" bak="$1.pre-install.bak"
+  if [ -f "$target" ] && [ ! -f "$bak" ]; then
+    cp "$target" "$bak"
+    log "Backed up pre-existing $target to $bak"
   fi
 }
 
@@ -107,6 +124,7 @@ PROXY_LOG_DEST="$PROXY_LOG_DEST"
 PROXY_LOG_FILE="$PROXY_LOG_FILE"
 INSTALL_DESKTOP_SHORTCUT="$INSTALL_DESKTOP_SHORTCUT"
 DESKTOP_DIR="$DESKTOP_DIR"
+LINGER_PRE_INSTALL_STATE="$LINGER_PRE_INSTALL_STATE"
 EOF
 }
 
@@ -380,6 +398,7 @@ log "Found container $CONTAINER_NAME"
 # --- Step 1: place litellm_config.yaml, with master_key and port patched in ---
 mkdir -p "$CONFIG_HOME"
 CONFIG_DEST="$CONFIG_HOME/litellm_config.yaml"
+backup_config "$CONFIG_DEST"
 sed -e "s/sk-local-dev-key/$PROXY_MASTER_KEY/g" \
     -e "s|http://localhost:8080|http://localhost:$LLAMA_PORT|g" \
     "$SCRIPT_DIR/litellm_config.yaml" > "$CONFIG_DEST"
@@ -399,6 +418,9 @@ log "Wrote $CONFIG_DEST"
 # --- Step 2: install both systemd unit files, patched for port/path ---
 mkdir -p "$HOME/.config/systemd/user"
 
+backup_config "$HOME/.config/systemd/user/litellm-ollama-box.service"
+backup_config "$HOME/.config/systemd/user/distrobox-reminder.service"
+
 sed -e "s|/home/%u/litellm_config.yaml|$CONFIG_DEST|" \
     -e "s/--port 4000/--port $PROXY_PORT/" \
     -e "s/distrobox enter ollama-box/distrobox enter $CONTAINER_NAME/" \
@@ -417,6 +439,14 @@ log "Enabled litellm-ollama-box.service and distrobox-reminder.service"
 
 # --- Step 4: lingering, if requested ---
 if [ "$ENABLE_LINGER" = "yes" ]; then
+  if [ -z "$LINGER_PRE_INSTALL_STATE" ]; then
+    if loginctl show-user "$USER" --property=Linger 2>/dev/null | grep -q "=yes"; then
+      LINGER_PRE_INSTALL_STATE="yes"
+    else
+      LINGER_PRE_INSTALL_STATE="no"
+    fi
+    save_config
+  fi
   loginctl enable-linger "$USER"
   log "Lingering enabled for $USER"
 fi
