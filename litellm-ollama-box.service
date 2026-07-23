@@ -5,11 +5,11 @@
 # unit on the host that calls into the container avoids that.
 #
 # This starts ONLY the LiteLLM proxy inside ollama-box. It does NOT run
-# "ollama serve" and does NOT load any model. The proxy config is local-only
-# (no cloud entries, no ANTHROPIC_API_KEY needed anywhere), so leaving this
-# running all the time costs nothing and bills nothing on its own. Whether
-# Claude Code actually talks to it is controlled separately by
-# claude-local-toggle.sh.
+# llama-server (start-local-llama.sh) and does NOT load any model. The
+# proxy config is local-only (no cloud entries, no ANTHROPIC_API_KEY needed
+# anywhere), so leaving this running all the time costs nothing and bills
+# nothing on its own. Whether Claude Code actually talks to it is
+# controlled separately by claude-local-toggle.sh.
 #
 # Install:
 #   mkdir -p ~/.config/systemd/user
@@ -18,16 +18,18 @@
 #   systemctl --user enable --now litellm-ollama-box.service
 #
 # To make this survive an actual machine boot (not just login), see
-# setup-directions.md for the loginctl enable-linger step.
+# README.md for the loginctl enable-linger step (install.sh also offers it
+# as a prompt).
 #
 # Check status / logs:
 #   systemctl --user status litellm-ollama-box.service
 #   journalctl --user -u litellm-ollama-box.service -f
 #
-# When you actually want the local model available, enter the container
-# yourself and start it manually:
-#   distrobox enter ollama-box
-#   ollama serve
+# When you actually want the local model available, start it manually
+# (see README for what this launches with - KV cache quant, flash
+# attention, speculative decoding flags), or use the "Start Local Model"
+# desktop icon if you installed it:
+#   ~/.local/bin/start-local-llama.sh
 
 [Unit]
 Description=LiteLLM proxy inside ollama-box distrobox (local-only, no cloud)

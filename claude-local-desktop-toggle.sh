@@ -3,8 +3,13 @@
 # Wrapper around claude-local-toggle.sh for double-clicking from the
 # desktop. Flips whatever state you're currently in and confirms with a
 # notification, since a desktop icon has no terminal to print to.
+#
+# Not using 'set -e' here on purpose: claude-local-toggle.sh's "on" now
+# deliberately exits non-zero when llama-server isn't reachable, and that
+# failure needs to reach notify-send, not just kill this script silently
+# with no terminal around to show why.
 
-set -euo pipefail
+set -uo pipefail
 
 TOGGLE_SCRIPT="$HOME/.local/bin/claude-local-toggle.sh"
 # If you installed the toggle script somewhere else, change the path above
@@ -21,6 +26,9 @@ if echo "$CURRENT" | grep -q "ON"; then
   "$TOGGLE_SCRIPT" off
   notify-send "Claude Code: local mode OFF" "Back on Pro subscription. Reload the VS Code/VSCodium window."
 else
-  "$TOGGLE_SCRIPT" on
-  notify-send "Claude Code: local mode ON" "Routing through local Qwen. Sonnet/Opus unavailable. Reload the VS Code/VSCodium window."
+  if "$TOGGLE_SCRIPT" on; then
+    notify-send "Claude Code: local mode ON" "Routing through local Qwen. Sonnet/Opus unavailable. Reload the VS Code/VSCodium window."
+  else
+    notify-send -u critical "Claude Code: local mode NOT switched on" "llama-server isn't running. Start it: ~/.local/bin/start-local-llama.sh"
+  fi
 fi
