@@ -227,11 +227,18 @@ if [ "$ENABLE_LINGER" = "yes" ]; then
 fi
 
 # --- Step 5: verify the proxy came up ---
-sleep 2
-if curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PROXY_PORT/health" | grep -q "200"; then
+PROXY_UP=no
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -s -o /dev/null -w "%{http_code}" "http://localhost:$PROXY_PORT/health" | grep -q "200"; then
+    PROXY_UP=yes
+    break
+  fi
+  sleep 1
+done
+if [ "$PROXY_UP" = "yes" ]; then
   echo "Proxy is up at http://localhost:$PROXY_PORT"
 else
-  echo "WARNING: proxy did not respond at http://localhost:$PROXY_PORT/health" >&2
+  echo "WARNING: proxy did not respond at http://localhost:$PROXY_PORT/health after 10s" >&2
   echo "Check: systemctl --user status litellm-ollama-box.service" >&2
 fi
 
@@ -298,6 +305,22 @@ if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
   # what you actually picked, no manual file editing needed to try options.
   distrobox enter "$CONTAINER_NAME" -- bash -lc "
     set -e
+    # ollama create talks to the Ollama server daemon, which our systemd unit
+    # deliberately does NOT start (so nothing loads into VRAM at login).
+    # Start it now if it isn't already running. This only starts the server
+    # process, it does not load any model weights, that still only happens
+    # on first actual inference, so this doesn't change the VRAM-at-idle
+    # behavior, it just makes building/testing possible without a manual
+    # 'ollama serve' in another terminal first.
+    if ! pgrep -f 'ollama serve' >/dev/null 2>&1; then
+      echo 'Starting ollama serve in the background...'
+      nohup ollama serve >/tmp/ollama-serve.log 2>&1 &
+      disown
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+        ollama list >/dev/null 2>&1 && break
+        sleep 1
+      done
+    fi
     GGUF_PATH=\$(find ~ -maxdepth 3 -iname '$GGUF_FILENAME' 2>/dev/null | head -n1)
     if [ -z \"\$GGUF_PATH\" ]; then
       echo 'ERROR: could not locate $GGUF_FILENAME anywhere under home. Check the download step above.' >&2
