@@ -23,6 +23,14 @@
 # Then build the tag, pointing FROM at the downloaded file, not a model
 # name (this is a local GGUF import, not an ollama pull):
 #   ollama create local-qwen35-coder-cc -f ./local-model.Modelfile
+#
+# Note: if you're running this via install.sh, it locates the downloaded
+# file automatically and rewrites the FROM line to an absolute path before
+# building, since a relative path here depends on which directory
+# "ollama create" happens to be run from, and hf download can nest the
+# file under a subdirectory depending on the repo's layout. If you're
+# building this by hand instead, replace the FROM line below with the
+# actual absolute path to wherever you downloaded the .gguf file.
 
 FROM ./Qwen3.5-9B-UD-Q5_K_XL.gguf
 

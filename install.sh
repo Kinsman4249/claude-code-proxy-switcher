@@ -254,8 +254,15 @@ if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
 
   echo "Building Ollama tag $OLLAMA_MODEL_TAG..."
   distrobox enter "$CONTAINER_NAME" -- bash -lc "
-    cd ~ &&
-    ollama create '$OLLAMA_MODEL_TAG' -f '$SCRIPT_DIR/local-model.Modelfile'
+    set -e
+    GGUF_PATH=\$(find ~ -maxdepth 3 -iname '$GGUF_FILENAME' 2>/dev/null | head -n1)
+    if [ -z \"\$GGUF_PATH\" ]; then
+      echo 'ERROR: could not locate $GGUF_FILENAME anywhere under home. Check the download step above.' >&2
+      exit 1
+    fi
+    echo \"Found downloaded model at: \$GGUF_PATH\"
+    sed \"s|^FROM .*|FROM \$GGUF_PATH|\" '$SCRIPT_DIR/local-model.Modelfile' > /tmp/local-model.resolved.Modelfile
+    ollama create '$OLLAMA_MODEL_TAG' -f /tmp/local-model.resolved.Modelfile
   "
   if [ $? -ne 0 ]; then
     echo "WARNING: 'ollama create' failed. Confirm the .gguf file and Modelfile" >&2
