@@ -55,6 +55,6 @@ QUANT_MENU_INTRO="Gemma 4 E2B from \$HF_REPO. Sizes are NOT filled in below
 listing yet); the context-length estimate will be skipped until you supply a
 size manually or pick 'custom' and enter one from the repo page."
 
-ARCH_NOTES="Gemma 4 E2B has no MoE layers (dense model), so --n-cpu-moe would
-be a no-op here. PLE tables are the offload lever for this model instead -
-see the PLE prompt above, when PLE_TENSOR_REGEX has been filled in."
+# Printed inside the generated start-local-llama.sh header, next to -ngl 99.
+# Kept to one line here - the generator wraps it to fit the comment column.
+ARCH_NOTES="no --n-cpu-moe: Gemma 4 E2B has no MoE layers (dense model), so that flag would be a no-op. PLE tables are the offload lever for this model instead, see PLE_TENSOR_REGEX above"

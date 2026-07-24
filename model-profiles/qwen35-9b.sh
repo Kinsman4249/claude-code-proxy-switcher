@@ -46,6 +46,5 @@ Larger = better quality, more VRAM. Sizes below are as reported by the repo
 (effectively GiB, i.e. already *1024 to MiB in the math further down)."
 
 # Printed inside the generated start-local-llama.sh header, next to -ngl 99.
-ARCH_NOTES="Qwen3.5-9B has no MoE layers (confirmed from its config.json: no
-num_experts field, mlp_only_layers is empty, dense intermediate_size
-throughout), so that flag would be a no-op here."
+# Kept to one line here - the generator wraps it to fit the comment column.
+ARCH_NOTES="no --n-cpu-moe: Qwen3.5-9B has no MoE layers (confirmed from its config.json: no num_experts field, mlp_only_layers is empty, dense intermediate_size throughout), so that flag would be a no-op"
