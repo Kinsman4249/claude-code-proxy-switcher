@@ -68,7 +68,7 @@ LLAMA_SPEC_DRAFT_N="${LLAMA_SPEC_DRAFT_N:-2}"
 LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-}"                   # resolved during Step 7, cached here
 PROXY_DEBUG_LOG="${PROXY_DEBUG_LOG:-no}"
 PROXY_LOG_DEST="${PROXY_LOG_DEST:-console}"                # console or disk
-PROXY_LOG_FILE="${PROXY_LOG_FILE:-/var/log/litellm-proxy.log}"
+PROXY_LOG_FILE="${PROXY_LOG_FILE:-$HOME/.local/state/litellm-proxy.log}"  # a systemd --user unit usually can't write /var/log
 INSTALL_DESKTOP_SHORTCUT="${INSTALL_DESKTOP_SHORTCUT:-yes}"
 DESKTOP_DIR="${DESKTOP_DIR:-$HOME/Desktop}"
 # Whether systemd lingering was already on before install.sh ever touched
@@ -443,12 +443,15 @@ if [ -z "$DISTROBOX_LIST_RAW" ]; then
 fi
 
 # distrobox list output is a table; the name is the second field, whitespace
-# padded, header row first.
-MATCH_COUNT="$(echo "$DISTROBOX_LIST_RAW" | tail -n +2 | grep -ic "$CONTAINER_NAME" || true)"
+# padded, header row first. Matching is restricted to that parsed name field,
+# not the whole row - grepping the raw row would also match container names
+# that only appear in the image column (e.g. typing "fedora" when a
+# container's base image is fedora:43 but its actual name is something else).
+ALL_NAMES="$(echo "$DISTROBOX_LIST_RAW" | tail -n +2 | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}')"
+MATCH_COUNT="$(echo "$ALL_NAMES" | grep -ic "$CONTAINER_NAME" || true)"
 
 if [ "$MATCH_COUNT" = "1" ]; then
-  RESOLVED_NAME="$(echo "$DISTROBOX_LIST_RAW" | tail -n +2 | grep -i "$CONTAINER_NAME" \
-    | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}')"
+  RESOLVED_NAME="$(echo "$ALL_NAMES" | grep -i "$CONTAINER_NAME")"
   if [ "$RESOLVED_NAME" != "$CONTAINER_NAME" ]; then
     echo "Note: using '$RESOLVED_NAME' (the actual container name), not '$CONTAINER_NAME' as typed."
     CONTAINER_NAME="$RESOLVED_NAME"
@@ -464,7 +467,7 @@ else
   echo "$DISTROBOX_LIST_RAW"
   echo
 
-  NAMES="$(echo "$DISTROBOX_LIST_RAW" | tail -n +2 | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}')"
+  NAMES="$ALL_NAMES"
   if [ -z "$NAMES" ]; then
     echo "ERROR: couldn't parse any container names out of the listing above." >&2
     exit 1
@@ -503,8 +506,9 @@ if [ "$PROXY_DEBUG_LOG" = "yes" ]; then
     -e "s/^  # log_level: DEBUG/  log_level: DEBUG/" \
     "$CONFIG_DEST"
   if [ "$PROXY_LOG_DEST" = "disk" ]; then
+    mkdir -p "$(dirname "$PROXY_LOG_FILE")"
     sed -i \
-      -e "s|^  # log_file: /var/log/litellm-proxy.log|  log_file: $PROXY_LOG_FILE|" \
+      -e "s|^  # log_file: ~/.local/state/litellm-proxy.log|  log_file: $PROXY_LOG_FILE|" \
       "$CONFIG_DEST"
   fi
 fi

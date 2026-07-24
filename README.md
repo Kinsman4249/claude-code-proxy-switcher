@@ -155,10 +155,10 @@ There's no automated test suite (this is glue between existing tools, not a libr
 ## Known limitations
 
 - Whether `notify-send` on your specific desktop session honors `urgency=critical` and stays up until clicked, rather than timing out, isn't confirmed against every notification daemon.
-- The proxy's model-name matching assumes Claude Code sends the literal strings `claude-haiku-4-5`, `claude-sonnet-5`, or `claude-opus-4-8`. If a future Claude Code release sends a different string (a full versioned ID, for example), that request won't match anything in `litellm_config.yaml` and will fail even with the proxy up and llama-server serving. Enable `log_level: DEBUG` in the config to check what's actually arriving if this happens.
+- `litellm_config.yaml` uses a wildcard `model_name: "*"` entry (confirmed working against LiteLLM 1.93.0), so any model string Claude Code sends routes to the local backend - a future Claude Code release using a new dated ID no longer breaks this. Enable `log_level: DEBUG` in the config if you want to see what's actually arriving.
 - This project assumes an existing Distrobox container with working GPU passthrough. `install.sh` checks that the container exists and exits with an error if it doesn't, it does not attempt to create or configure one, since getting GPU passthrough right on container creation isn't something worth guessing at silently. It does build `llama-server` itself inside the container if missing, but assumes CUDA/driver access already works there (e.g. Ollama or another GPU workload has run in it before).
 - Starting the model server is still a manual step (open a terminal, run `start-local-llama.sh`) rather than systemd-managed; backgrounding a long-running process inside a `distrobox enter -- bash -lc` exec session is unreliable (the container runtime can tear it down when that session exits), see `todo.md`.
 
 ## License
 
-Not yet decided. Treat this as all-rights-reserved until a LICENSE file is added.
+GNU General Public License v3.0 - see `LICENSE`.

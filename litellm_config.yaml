@@ -25,47 +25,30 @@ model_list:
   # this to the ollama provider (localhost:11434, nothing listening there)
   # instead of the api_base below. Confirmed by testing "openai/qwen-local"
   # (broken, tried to hit ollama) vs "openai/local-llm" (works).
-  - model_name: local-llm
+  #
+  # One wildcard entry replaces what used to be five near-identical blocks
+  # (local-llm, claude-haiku-4-5, claude-haiku-4-5-20251001, claude-sonnet-5,
+  # claude-opus-4-8) - LiteLLM matches model_name: "*" against ANY model
+  # string the client sends and routes it to this single backend, so a
+  # future Claude Code release sending a different string (a new dated ID,
+  # for example) no longer needs a new line added here. Confirmed working
+  # against LiteLLM 1.93.0 by sending a made-up model name through a test
+  # proxy and getting a connection attempt to this api_base back, not a
+  # "model not found" error.
+  #
+  # A wildcard model_name is only safe here specifically because this config
+  # has no cloud backend entry at all - there is nothing for an unmatched
+  # request to fall through to except this local server, so a typo'd or
+  # unexpected model string still can't reach a billed API by accident.
+  - model_name: "*"
     litellm_params:
       model: openai/local-llm
       api_base: http://localhost:8080/v1
       api_key: "not-needed"   # llama-server has no auth unless --api-key is passed
-
-  # Map every model alias/full-ID Claude Code might send to the same local
-  # backend, so nothing errors due to an unmapped model name while local
-  # mode is on. Add more lines here if you see a different model string in
-  # the proxy logs (enable log_level: DEBUG below to check).
-  - model_name: claude-haiku-4-5
-    litellm_params:
-      model: openai/local-llm
-      api_base: http://localhost:8080/v1
-      api_key: "not-needed"
-
-  # Claude Code actually sends this exact dated string for Haiku, not the
-  # short alias above. Confirmed via a live 400 error: "Invalid model name
-  # passed in model=claude-haiku-4-5-20251001". Keeping both entries since
-  # a future Claude Code version could plausibly use either form.
-  - model_name: claude-haiku-4-5-20251001
-    litellm_params:
-      model: openai/local-llm
-      api_base: http://localhost:8080/v1
-      api_key: "not-needed"
-
-  - model_name: claude-sonnet-5
-    litellm_params:
-      model: openai/local-llm
-      api_base: http://localhost:8080/v1
-      api_key: "not-needed"
-
-  - model_name: claude-opus-4-8
-    litellm_params:
-      model: openai/local-llm
-      api_base: http://localhost:8080/v1
-      api_key: "not-needed"
 
 general_settings:
   master_key: sk-local-dev-key   # change this; used as ANTHROPIC_AUTH_TOKEN
   # Uncomment to see exactly what model string Claude Code is sending, useful
   # for catching a request that doesn't match any model_name above:
   # log_level: DEBUG
-  # log_file: /var/log/litellm-proxy.log
+  # log_file: ~/.local/state/litellm-proxy.log
