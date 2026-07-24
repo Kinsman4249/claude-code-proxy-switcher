@@ -350,11 +350,21 @@ if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
   echo "below), then re-run this script and raise the context/quant if there's"
   echo "more room than the recommendation assumed."
 
-  echo
-  echo "Speculative decoding draft length (--spec-draft-n-max), via the"
-  echo "MTP head baked into the $HF_REPO build. Community guidance is"
-  echo "around 2 for dense-leaning models, higher for MoE-heavy ones."
-  ask LLAMA_SPEC_DRAFT_N "Max draft tokens per step"
+  if [ "$SPEC_MODE" = "self-mtp" ]; then
+    echo
+    echo "Speculative decoding draft length (--spec-draft-n-max), via the"
+    echo "MTP head baked into the $HF_REPO build. Community guidance is"
+    echo "around 2 for dense-leaning models, higher for MoE-heavy ones."
+    ask LLAMA_SPEC_DRAFT_N "Max draft tokens per step"
+  elif [ "$SPEC_MODE" = "draft-model" ]; then
+    echo
+    echo "Speculative decoding draft length (--spec-draft-n-max), via a"
+    echo "separate drafter model (not baked into the main GGUF for this"
+    echo "profile - the drafter is downloaded separately below, and this"
+    echo "flag only takes effect if that download resolves to a file)."
+    ask LLAMA_SPEC_DRAFT_N "Max draft tokens per step"
+  fi
+  # SPEC_MODE=none: no draft-length prompt, no spec flags emitted below.
 fi
 ask LLAMA_PORT "llama-server port"
 ask PROXY_DEBUG_LOG "Enable verbose LiteLLM proxy logging? (yes/no)"
@@ -711,6 +721,43 @@ else
   echo "Skipped model download. Run this script again with 'yes' when ready."
 fi
 
+# --- Step 9c: download the drafter model, if this profile uses one ---
+# Only SPEC_MODE=draft-model needs a separate file (Qwen's self-mtp mode
+# uses the MTP head already baked into the main GGUF above). If the profile
+# hasn't got a confirmed drafter repo/pattern yet (both empty - true for
+# both Gemma profiles as shipped, see model-profiles/gemma4-e*b.sh), this
+# is skipped entirely and the generation step below omits --spec-type
+# rather than emit it without a resolvable -md path.
+LLAMA_DRAFT_PATH=""
+if [ "$SPEC_MODE" = "draft-model" ]; then
+  if [ -n "${DRAFT_REPO:-}" ] && [ -n "${DRAFT_PATTERN:-}" ]; then
+    DRAFT_FIND="find '$MODEL_DIR' -maxdepth 1 -iname '*$DRAFT_PATTERN*.gguf' 2>/dev/null"
+    if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
+      EXISTING_DRAFT="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "$DRAFT_FIND" | head -n1)"
+      if [ -n "$EXISTING_DRAFT" ]; then
+        LLAMA_DRAFT_PATH="$EXISTING_DRAFT"
+        echo "Already have the drafter model at $LLAMA_DRAFT_PATH, skipping download."
+      else
+        echo "Downloading a *$DRAFT_PATTERN*.gguf drafter from $DRAFT_REPO..."
+        distrobox enter "$CONTAINER_NAME" -- bash -lc "
+          hf download '$DRAFT_REPO' --include '*$DRAFT_PATTERN*.gguf' --local-dir '$MODEL_DIR'
+        "
+        LLAMA_DRAFT_PATH="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "$DRAFT_FIND" | head -n1)"
+      fi
+    else
+      LLAMA_DRAFT_PATH="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "$DRAFT_FIND" | head -n1)"
+    fi
+  fi
+  if [ -z "$LLAMA_DRAFT_PATH" ]; then
+    echo "WARNING: this profile uses a separate drafter model for speculative" >&2
+    echo "decoding, but none is configured/resolved (DRAFT_REPO/DRAFT_PATTERN" >&2
+    echo "empty, or the download/search above found nothing). Starting without" >&2
+    echo "speculative decoding - slower, but correct, rather than guessing a" >&2
+    echo "drafter file. Fill in DRAFT_REPO/DRAFT_PATTERN in $PROFILE_FILE once" >&2
+    echo "you've confirmed the real filenames, then re-run install.sh." >&2
+  fi
+fi
+
 # --- Step 10: generate start-local-llama.sh with all the tuning flags baked in ---
 if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
   # Optional VRAM-headroom flags (see the prompts above): neither is on by
@@ -743,6 +790,32 @@ if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
   # under it, closing paren appended to the last line.
   ARCH_NOTES_WRAPPED="$(echo "${ARCH_NOTES})" | fold -s -w 51 | sed '2,$s/^/#                          /')"
 
+  # Speculative-decoding flags depend on the profile's SPEC_MODE. Never emit
+  # --spec-type draft-mtp without a resolved -md for draft-model profiles -
+  # if LLAMA_DRAFT_PATH didn't resolve (Step 9c warned about this already),
+  # fall back to no speculative decoding at all rather than a broken flag.
+  SPEC_ARGS=""
+  case "$SPEC_MODE" in
+    self-mtp)
+      SPEC_ARGS=" --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N"
+      SPEC_COMMENT="# --spec-type draft-mtp   self-speculative decoding via the model's MTP head"
+      ;;
+    draft-model)
+      if [ -n "$LLAMA_DRAFT_PATH" ]; then
+        SPEC_ARGS=" -md \"$LLAMA_DRAFT_PATH\" --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N -ngld 0"
+        SPEC_COMMENT="# -md / --spec-type       speculative decoding via a separate drafter model
+#                          (-ngld 0 keeps the drafter on CPU rather than
+#                          eating into the main model's VRAM budget - see
+#                          gemma4-support-spec.md section 4)"
+      else
+        SPEC_COMMENT="# (speculative decoding skipped: no drafter model resolved for this profile)"
+      fi
+      ;;
+    *)
+      SPEC_COMMENT="# (no speculative decoding for this profile)"
+      ;;
+  esac
+
   cat > "$BIN_DIR/start-local-llama.sh" << EOF
 #!/usr/bin/env bash
 # start-local-llama.sh
@@ -752,7 +825,7 @@ if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
 # -ngl 99                 offload all layers to GPU ($ARCH_NOTES_WRAPPED
 # -fa on                  flash attention (required for KV cache quant below)
 # --cache-type-k/v q8_0   Q8 KV cache quantization, halves KV cache VRAM cost
-# --spec-type draft-mtp   self-speculative decoding via the model's MTP head
+$SPEC_COMMENT
 # --fit off               disable llama.cpp's automatic VRAM-fitting pass: it
 #                          can't override the manual -ngl/--override-tensor
 #                          budget below, so left on it only produces a
@@ -790,10 +863,10 @@ distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
   -b $LLAMA_BATCH_SIZE \\
   -fa on \\
   --cache-type-k q8_0 --cache-type-v q8_0 \\
-  --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N \\
+$([ -n "$SPEC_ARGS" ] && echo " $SPEC_ARGS \\")
   --fit off \\
   --no-webui \\
-$([ -n "$SAMPLING_ARGS" ] && echo "  $SAMPLING_ARGS \\")
+$([ -n "$SAMPLING_ARGS" ] && echo " $SAMPLING_ARGS \\")
   --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS \\
   2>&1 | tee "\$LOG_FILE"
 EOF
@@ -864,7 +937,7 @@ EOF
   echo "    -m \"$LLAMA_MODEL_PATH\" \\"
   echo "    -ngl 99 -c $LLAMA_CTX_SIZE -b $LLAMA_BATCH_SIZE \\"
   echo "    -fa on --cache-type-k q8_0 --cache-type-v q8_0 \\"
-  echo "    --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N \\"
+  [ -n "$SPEC_ARGS" ] && echo "   $SPEC_ARGS \\"
   echo "    --fit off \\"
   echo "    --no-webui \\"
   [ -n "$SAMPLING_ARGS" ] && echo "   $SAMPLING_ARGS \\"
