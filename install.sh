@@ -48,10 +48,14 @@ PROXY_PORT="${PROXY_PORT:-4000}"
 PROXY_MASTER_KEY="${PROXY_MASTER_KEY:-sk-local-dev-key}"
 ENABLE_LINGER="${ENABLE_LINGER:-no}"
 DOWNLOAD_MODEL_NOW="${DOWNLOAD_MODEL_NOW:-yes}"
-GGUF_PATTERN="${GGUF_PATTERN:-UD-Q5_K_XL}"                 # quant fragment, matched as a glob
-QUANT_WEIGHT_MIB="${QUANT_WEIGHT_MIB:-6902}"               # weight file size, MiB, feeds the context math
-HF_REPO="${HF_REPO:-unsloth/Qwen3.5-9B-MTP-GGUF}"          # MTP build: needed for --spec-type draft-mtp
-QUANT_CHOICE="${QUANT_CHOICE:-5}"
+MODEL_PROFILE="${MODEL_PROFILE:-qwen35-9b}"                # which model-profiles/*.sh to load
+LAST_MODEL_PROFILE="${LAST_MODEL_PROFILE:-}"               # profile in effect last run, so we know to reset
+                                                            # HF_REPO/GGUF_PATTERN/etc to the new profile's
+                                                            # defaults when this run switches profiles
+GGUF_PATTERN="${GGUF_PATTERN:-}"                           # quant fragment, matched as a glob (profile default if empty)
+QUANT_WEIGHT_MIB="${QUANT_WEIGHT_MIB:-}"                   # weight file size, MiB, feeds the context math
+HF_REPO="${HF_REPO:-}"                                     # Hugging Face repo (profile default if empty)
+QUANT_CHOICE="${QUANT_CHOICE:-}"
 GPU_VRAM_MIB="${GPU_VRAM_MIB:-7885}"                       # usable VRAM, MiB (~7.7 GiB), feeds the context math
 LLAMA_PORT="${LLAMA_PORT:-8080}"
 LLAMA_CTX_SIZE="${LLAMA_CTX_SIZE:-16384}"
@@ -107,6 +111,8 @@ PROXY_PORT="$PROXY_PORT"
 PROXY_MASTER_KEY="$PROXY_MASTER_KEY"
 ENABLE_LINGER="$ENABLE_LINGER"
 DOWNLOAD_MODEL_NOW="$DOWNLOAD_MODEL_NOW"
+MODEL_PROFILE="$MODEL_PROFILE"
+LAST_MODEL_PROFILE="$LAST_MODEL_PROFILE"
 GGUF_PATTERN="$GGUF_PATTERN"
 QUANT_WEIGHT_MIB="$QUANT_WEIGHT_MIB"
 HF_REPO="$HF_REPO"
@@ -155,36 +161,74 @@ ask BIN_DIR "Directory to install claude-local-toggle.sh into"
 ask PROXY_PORT "LiteLLM proxy port"
 ask PROXY_MASTER_KEY "Proxy auth token (used as ANTHROPIC_AUTH_TOKEN)"
 ask ENABLE_LINGER "Enable systemd lingering so proxy starts before login too? (yes/no)"
+
+# --- Model profile: which model-profiles/*.sh fragment to load ---
+# This changes every model-specific default below it (repo, quant sizes,
+# layer count, KV sizing behaviour, spec-decoding wiring), so it's asked
+# before any of those questions.
+PROFILE_DIR="$SCRIPT_DIR/model-profiles"
+AVAILABLE_PROFILES="$(cd "$PROFILE_DIR" && ls -1 ./*.sh 2>/dev/null | sed -e 's|^\./||' -e 's|\.sh$||')"
+echo
+echo "Which model profile? Available: $(echo "$AVAILABLE_PROFILES" | tr '\n' ' ')"
+ask MODEL_PROFILE "Model profile name"
+
+PROFILE_FILE="$PROFILE_DIR/$MODEL_PROFILE.sh"
+if [ ! -f "$PROFILE_FILE" ]; then
+  echo "ERROR: no model-profiles/$MODEL_PROFILE.sh found. Available profiles:" >&2
+  echo "$AVAILABLE_PROFILES" >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+source "$PROFILE_FILE"
+log "Loaded model profile: $PROFILE_NAME ($PROFILE_FILE)"
+
+# Switching profiles from a previous run makes the old run's saved
+# HF_REPO/GGUF_PATTERN/QUANT_WEIGHT_MIB/QUANT_CHOICE stale (they belonged to
+# a different model) - reset them to this profile's defaults. Re-running the
+# same profile leaves them alone, which is what keeps re-runs idempotent.
+if [ "$MODEL_PROFILE" != "$LAST_MODEL_PROFILE" ]; then
+  HF_REPO="$HF_REPO_DEFAULT"
+  GGUF_PATTERN=""
+  QUANT_WEIGHT_MIB=""
+  QUANT_CHOICE=""
+  LAST_MODEL_PROFILE="$MODEL_PROFILE"
+fi
+[ -z "$HF_REPO" ] && HF_REPO="$HF_REPO_DEFAULT"
+
 ask DOWNLOAD_MODEL_NOW "Download the local model now? (yes/no, big download if not already cached)"
 if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
   echo
-  echo "Which quantization? All are Qwen3.5-9B-MTP from $HF_REPO"
-  echo "(the MTP build is required for self-speculative decoding via --spec-type draft-mtp)."
-  echo "Larger = better quality, more VRAM. Sizes below are as reported by the repo"
-  echo "(effectively GiB, i.e. already *1024 to MiB in the math further down)."
-  echo "  1) Q4_K_M      5.68 GB  (most VRAM headroom for a bigger context)"
-  echo "  2) UD-Q4_K_XL  5.97 GB  (Unsloth dynamic quant, better quality at similar size)"
-  echo "  3) Q5_K_S      6.36 GB"
-  echo "  4) Q5_K_M      6.58 GB  (floor recommended for coding/tool-calling precision)"
-  echo "  5) UD-Q5_K_XL  6.74 GB  (previous default, best quality that still leaves headroom)"
-  echo "  6) Q6_K        7.46 GB  (best quality, very little room left for context)"
-  echo "  7) custom      (type your own quant fragment, e.g. 'IQ4_XS')"
+  echo "Which quantization? $(eval "echo \"$QUANT_MENU_INTRO\"")"
+  PICK_NUM=1
+  for ENTRY in "${QUANT_MENU[@]}"; do
+    IFS='|' read -r FRAG SIZE_MIB DESC <<< "$ENTRY"
+    if [ -n "$SIZE_MIB" ]; then
+      SIZE_GB="$(awk -v m="$SIZE_MIB" 'BEGIN { printf "%.2f", m/1024 }')"
+      SIZE_TXT="${SIZE_GB} GB"
+    else
+      SIZE_TXT="size UNVERIFIED"
+    fi
+    if [ -n "$DESC" ]; then
+      printf "  %d) %-12s %-14s (%s)\n" "$PICK_NUM" "$FRAG" "$SIZE_TXT" "$DESC"
+    else
+      printf "  %d) %-12s %s\n" "$PICK_NUM" "$FRAG" "$SIZE_TXT"
+    fi
+    PICK_NUM=$((PICK_NUM + 1))
+  done
+  CUSTOM_CHOICE="$PICK_NUM"
+  echo "  $CUSTOM_CHOICE) custom      (type your own quant fragment, e.g. 'IQ4_XS')"
   ask QUANT_CHOICE "Pick a number"
-  # QUANT_WEIGHT_MIB feeds the context-length recommendation below. Sizes are
-  # the repo-reported "GB" figures * 1024 (they're effectively GiB already,
-  # the usual llama.cpp/HF convention).
-  case "$QUANT_CHOICE" in
-    1) GGUF_PATTERN="Q4_K_M";     QUANT_WEIGHT_MIB=5816 ;;
-    2) GGUF_PATTERN="UD-Q4_K_XL"; QUANT_WEIGHT_MIB=6113 ;;
-    3) GGUF_PATTERN="Q5_K_S";     QUANT_WEIGHT_MIB=6513 ;;
-    4) GGUF_PATTERN="Q5_K_M";     QUANT_WEIGHT_MIB=6739 ;;
-    5) GGUF_PATTERN="UD-Q5_K_XL"; QUANT_WEIGHT_MIB=6902 ;;
-    6) GGUF_PATTERN="Q6_K";       QUANT_WEIGHT_MIB=7639 ;;
-    7) ask GGUF_PATTERN "Exact quant fragment (check the repo's file listing if unsure)"
-       ask QUANT_WEIGHT_MIB "Approximate file size of that quant, in MiB (check the repo's file listing; leave blank to skip the context recommendation below)" ;;
-    "") ;;  # empty input keeps whatever GGUF_PATTERN/QUANT_WEIGHT_MIB already was (saved default)
-    *) echo "Didn't recognize that, keeping $GGUF_PATTERN" ;;
-  esac
+  # QUANT_WEIGHT_MIB feeds the context-length recommendation below.
+  if [ -z "$QUANT_CHOICE" ]; then
+    :  # empty input keeps whatever GGUF_PATTERN/QUANT_WEIGHT_MIB already was (saved default)
+  elif [ "$QUANT_CHOICE" = "$CUSTOM_CHOICE" ]; then
+    ask GGUF_PATTERN "Exact quant fragment (check the repo's file listing if unsure)"
+    ask QUANT_WEIGHT_MIB "Approximate file size of that quant, in MiB (check the repo's file listing; leave blank to skip the context recommendation below)"
+  elif [ "$QUANT_CHOICE" -ge 1 ] 2>/dev/null && [ "$QUANT_CHOICE" -le "${#QUANT_MENU[@]}" ] 2>/dev/null; then
+    IFS='|' read -r GGUF_PATTERN QUANT_WEIGHT_MIB _ <<< "${QUANT_MENU[$((QUANT_CHOICE - 1))]}"
+  else
+    echo "Didn't recognize that, keeping $GGUF_PATTERN"
+  fi
   ask HF_REPO "Hugging Face repo"
 
   echo
