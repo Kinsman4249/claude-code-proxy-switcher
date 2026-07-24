@@ -88,6 +88,8 @@ This launches `llama-server` inside the container with the flags `install.sh` ge
 
 If you installed the desktop icons, "Start Local Model" does the same thing for you: double-click it and it opens `start-local-llama.sh` in its own terminal window (`konsole`, falling back to `gnome-terminal` or `xterm`), so starting the model day to day is one click instead of typing a command. If it's already running, it just tells you so instead of opening a second instance. If no terminal emulator can be found on your desktop session, it falls back to a notification containing the exact command to paste into a terminal yourself - this fallback path hasn't been exercised in practice since it depends on your specific desktop setup, so treat it as best-effort until you've confirmed the double-click actually opens a window.
 
+Model profiles that specify sampling defaults (`--temp`/`--top-p`/`--top-k`) get them set on the server itself, from the model card, rather than relying on whatever the client sends - see `model-profiles/*.sh`. Gemma 4's "thinking mode" is deliberately left off: it's triggered by putting a `<|think|>` token at the start of the system prompt, not a CLI flag, and this project never injects it, since for a mechanical Claude Code tool-calling workload thinking output is pure added latency and token cost. Add the token to a system prompt yourself if you want it.
+
 ### Sizing your context window
 
 `llama-server`'s VRAM use breaks down into three pieces: the model weights (fixed by your quant choice), a compute buffer (scales with batch size), and the KV cache (scales with context length). Running out of either of the first two before the third gets its share is the "out of context" symptom.

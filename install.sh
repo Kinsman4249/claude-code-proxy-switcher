@@ -729,6 +729,14 @@ if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
   fi
   EXTRA_FLAGS="$OT_ARGS$KVOFFLOAD_ARGS"
 
+  # Sampling defaults from the model profile, set on the server so they
+  # apply regardless of what the client sends. Empty in a profile (Qwen)
+  # means "don't override the server/client default" - no flags emitted.
+  SAMPLING_ARGS=""
+  [ -n "${DEFAULT_TEMP:-}" ]  && SAMPLING_ARGS="$SAMPLING_ARGS --temp $DEFAULT_TEMP"
+  [ -n "${DEFAULT_TOP_P:-}" ] && SAMPLING_ARGS="$SAMPLING_ARGS --top-p $DEFAULT_TOP_P"
+  [ -n "${DEFAULT_TOP_K:-}" ] && SAMPLING_ARGS="$SAMPLING_ARGS --top-k $DEFAULT_TOP_K"
+
   # ARCH_NOTES comes from the model profile (model-profiles/*.sh) as one long
   # line; wrap it here to match the comment column the rest of this header
   # uses, first line after "offload all layers to GPU (", continuation lines
@@ -759,6 +767,7 @@ if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
 # -b $LLAMA_BATCH_SIZE               batch size (llama.cpp's own default is 512)
 $([ -n "$OT_ARGS" ] && echo "# --override-tensor          last $LLAMA_CPU_FFN_LAYERS layers' FFN weights forced to CPU RAM")
 $([ -n "$KVOFFLOAD_ARGS" ] && echo "# --no-kv-offload            whole KV cache kept in system RAM instead of VRAM")
+$([ -n "$SAMPLING_ARGS" ] && echo "# --temp/--top-p/--top-k     sampling defaults from the $PROFILE_NAME model card")
 # LOG_FILE            every run's output also goes here (overwritten each
 #                      start, not appended) so a crash is diagnosable even if
 #                      it happened in a terminal window that already closed.
@@ -784,6 +793,7 @@ distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
   --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N \\
   --fit off \\
   --no-webui \\
+$([ -n "$SAMPLING_ARGS" ] && echo "  $SAMPLING_ARGS \\")
   --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS \\
   2>&1 | tee "\$LOG_FILE"
 EOF
@@ -857,6 +867,7 @@ EOF
   echo "    --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N \\"
   echo "    --fit off \\"
   echo "    --no-webui \\"
+  [ -n "$SAMPLING_ARGS" ] && echo "   $SAMPLING_ARGS \\"
   echo "    --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS"
   echo
   echo "Or just: $BIN_DIR/start-local-llama.sh"
