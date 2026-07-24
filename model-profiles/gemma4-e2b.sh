@@ -15,7 +15,9 @@
 # remove this warning block.
 
 PROFILE_NAME="Gemma 4 E2B"
-HF_REPO_DEFAULT="google/gemma-4-E2B-GGUF"       # UNVERIFIED: confirm exact repo/quant filenames exist before use
+HF_REPO_DEFAULT="unsloth/gemma-4-E2B-it-GGUF"   # google/gemma-4-E2B-GGUF does not exist (404) - Google never
+                                                 # published a GGUF for this model; unsloth's quant repo confirmed
+                                                 # to exist on the Hub. Quant filenames/sizes still UNVERIFIED below.
 
 DRAFT_REPO=""      # UNVERIFIED: confirm an E2B drafter GGUF repo exists (section 4) before setting this
 DRAFT_PATTERN=""   # UNVERIFIED: exact drafter filename fragment, from the repo's file listing
