@@ -92,7 +92,8 @@ Same command as the Quickstart - it just re-downloads and overwrites every file 
 |-- claude-local-toggle.sh          - the actual switch: on/off/status, edits ~/.claude/settings.json
 |-- claude-local-desktop-toggle.sh  - wrapper for the desktop icon: flips state, confirms via notification
 |-- claude-local-toggle.desktop     - desktop launcher entry
-|-- install.sh                      - interactive installer running every step below, with saved defaults
+|-- install.sh                      - thin orchestrator: sources install.d/*.sh in order, then runs each step
+|-- install.d/                      - one function per install step (00-config.sh .. 90-summary.sh), see install.sh's header comment
 `-- uninstall.sh                    - reverses install.sh: stops/removes services, restores backed-up configs, deletes generated files
 ```
 

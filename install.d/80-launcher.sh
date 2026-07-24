@@ -1,0 +1,300 @@
+# 80-launcher.sh
+# Sourced by install.sh. Step 10: generates start-local-llama.sh with every
+# tuning flag baked in (and, if requested, a desktop icon for it), then
+# walks you through starting it once and smoke-tests the proxy end to end.
+# Split into build_start_script() / build_desktop_launcher() /
+# launch_and_verify(), called in order by run_launcher_step() - that
+# wrapper reproduces the original single big "if LLAMA_SERVER_BIN and
+# LLAMA_MODEL_PATH are both set" guard around all three.
+
+# --- Step 10: generate start-local-llama.sh with all the tuning flags baked in ---
+build_start_script() {
+  # Optional VRAM-headroom flags (see the prompts above): neither is on by
+  # default, both trade some speed for more room when the quant/context
+  # combination above doesn't fit.
+  OT_ARGS=""
+  if [ "${LLAMA_CPU_FFN_LAYERS:-0}" -gt 0 ] 2>/dev/null; then
+    FIRST_OFFLOAD=$(( N_LAYERS - LLAMA_CPU_FFN_LAYERS ))
+    if [ "$FIRST_OFFLOAD" -lt 0 ]; then FIRST_OFFLOAD=0; fi
+    LAYER_RANGE="$(seq -s'|' "$FIRST_OFFLOAD" "$((N_LAYERS - 1))")"
+    OT_ARGS=" --override-tensor \"blk\\.(${LAYER_RANGE})\\.ffn_(gate|up|down)\\.weight=CPU\""
+  fi
+  KVOFFLOAD_ARGS=""
+  if [ "$LLAMA_NO_KV_OFFLOAD" = "yes" ]; then
+    KVOFFLOAD_ARGS=" --no-kv-offload"
+  fi
+  # Kept separate from OT_ARGS on purpose (see the prompt above): this is the
+  # opposite tradeoff from the dense-FFN offload, not the same knob again.
+  PLE_OFFLOAD_ARGS=""
+  if [ -n "${PLE_TENSOR_REGEX:-}" ] && [ "$KEEP_PLE_ON_CPU" = "yes" ]; then
+    PLE_OFFLOAD_ARGS=" --override-tensor \"${PLE_TENSOR_REGEX}=CPU\""
+  fi
+
+  # Sampling defaults from the model profile, set on the server so they
+  # apply regardless of what the client sends. Empty in a profile (Qwen)
+  # means "don't override the server/client default" - no flags emitted.
+  SAMPLING_ARGS=""
+  [ -n "${DEFAULT_TEMP:-}" ]  && SAMPLING_ARGS="$SAMPLING_ARGS --temp $DEFAULT_TEMP"
+  [ -n "${DEFAULT_TOP_P:-}" ] && SAMPLING_ARGS="$SAMPLING_ARGS --top-p $DEFAULT_TOP_P"
+  [ -n "${DEFAULT_TOP_K:-}" ] && SAMPLING_ARGS="$SAMPLING_ARGS --top-k $DEFAULT_TOP_K"
+
+  # ARCH_NOTES comes from the model profile (model-profiles/*.sh) as one long
+  # line; wrap it here to match the comment column the rest of this header
+  # uses, first line after "offload all layers to GPU (", continuation lines
+  # under it, closing paren appended to the last line.
+  ARCH_NOTES_WRAPPED="$(echo "${ARCH_NOTES})" | fold -s -w 51 | sed '2,$s/^/#                          /')"
+
+  # Speculative-decoding flags depend on the profile's SPEC_MODE. Never emit
+  # --spec-type draft-mtp without a resolved -md for draft-model profiles -
+  # if LLAMA_DRAFT_PATH didn't resolve (Step 9c warned about this already),
+  # fall back to no speculative decoding at all rather than a broken flag.
+  SPEC_ARGS=""
+  case "$SPEC_MODE" in
+    self-mtp)
+      SPEC_ARGS=" --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N"
+      SPEC_COMMENT="# --spec-type draft-mtp   self-speculative decoding via the model's MTP head"
+      ;;
+    draft-model)
+      if [ -n "$LLAMA_DRAFT_PATH" ]; then
+        SPEC_ARGS=" -md \"$LLAMA_DRAFT_PATH\" --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N -ngld 0"
+        SPEC_COMMENT="# -md / --spec-type       speculative decoding via a separate drafter model
+#                          (-ngld 0 keeps the drafter on CPU rather than
+#                          eating into the main model's VRAM budget - see
+#                          gemma4-support-spec.md section 4)"
+      else
+        SPEC_COMMENT="# (speculative decoding skipped: no drafter model resolved for this profile)"
+      fi
+      ;;
+    *)
+      SPEC_COMMENT="# (no speculative decoding for this profile)"
+      ;;
+  esac
+
+  # Everything optional gets folded into one trailing flag string, appended
+  # directly to the --host line below rather than given its own backslash-
+  # continued line - a conditionally-empty line in the middle of a `\`
+  # continuation chain silently breaks the command in two (the shell treats
+  # the blank line as ending it), so nothing optional may sit on its own
+  # line here even when guarded by [ -n ... ].
+  EXTRA_FLAGS="$OT_ARGS$KVOFFLOAD_ARGS$PLE_OFFLOAD_ARGS$SPEC_ARGS$SAMPLING_ARGS"
+
+  # --fit off (manual KV sizing, Qwen): the context/VRAM budget above was
+  # computed by hand, and --fit on would fight that manual -ngl/--override-
+  # tensor budget - see the discussion linked below.
+  # --fit on (probe KV sizing, Gemma): no hand-rolled budget exists for this
+  # profile, so let llama.cpp size the context itself, up to the ceiling
+  # you gave it, and read back what it actually picked (see Step 11 below).
+  if [ "$KV_MODEL" = "manual" ]; then
+    FIT_FLAG="--fit off"
+    FIT_COMMENT="# --fit off               disable llama.cpp's automatic VRAM-fitting pass: it
+#                          can't override the manual -ngl/--override-tensor
+#                          budget below, so left on it only produces a
+#                          harmless but alarming-looking \"common_fit_params:
+#                          ... abort\" warning on every startup (see
+#                          https://github.com/ggml-org/llama.cpp/discussions/18049)"
+  else
+    FIT_FLAG="--fit on"
+    FIT_COMMENT="# --fit on                let llama.cpp size the KV cache itself, up to -c
+#                          below as a ceiling - this profile has no manual
+#                          KV-sizing formula (see model-profiles/$MODEL_PROFILE.sh)"
+  fi
+
+  cat > "$BIN_DIR/start-local-llama.sh" << EOF
+#!/usr/bin/env bash
+# start-local-llama.sh
+# Generated by install.sh - re-run install.sh to change any of these flags,
+# don't hand-edit (your edits won't survive the next install.sh run).
+#
+# -ngl 99                 offload all layers to GPU ($ARCH_NOTES_WRAPPED
+# -fa on                  flash attention (required for KV cache quant below)
+# --cache-type-k/v q8_0   Q8 KV cache quantization, halves KV cache VRAM cost
+$SPEC_COMMENT
+$FIT_COMMENT
+# --no-webui              disable llama.cpp's built-in browser chat UI - you
+#                          only talk to this server through Claude Code /
+#                          the API, never a browser, so there's no reason to
+#                          serve it (doesn't touch VRAM either way, it's just
+#                          static asset serving on the same HTTP listener)
+# (sliding-window attention: llama.cpp only allocates the local-attention
+#  window's worth of KV cache by default, not the full context, on models
+#  that use it - this is the default and stays on; --swa-full is never
+#  passed here, which would disable that saving)
+# -b $LLAMA_BATCH_SIZE               batch size (llama.cpp's own default is 512)
+$([ -n "$OT_ARGS" ] && echo "# --override-tensor          last $LLAMA_CPU_FFN_LAYERS layers' FFN weights forced to CPU RAM")
+$([ -n "$KVOFFLOAD_ARGS" ] && echo "# --no-kv-offload            whole KV cache kept in system RAM instead of VRAM")
+$([ -n "$PLE_OFFLOAD_ARGS" ] && echo "# --override-tensor          Per-Layer Embedding tables kept in system RAM (lookup-only, cheap to offload)")
+$([ -n "$SAMPLING_ARGS" ] && echo "# --temp/--top-p/--top-k     sampling defaults from the $PROFILE_NAME model card")
+# LOG_FILE            every run's output also goes here (overwritten each
+#                      start, not appended) so a crash is diagnosable even if
+#                      it happened in a terminal window that already closed.
+#
+# Runs in the foreground so you can watch its own log output. Ctrl+C to stop.
+LOG_FILE="\$HOME/.local/state/llama-server.log"
+mkdir -p "\$(dirname "\$LOG_FILE")"
+
+if curl -s -o /dev/null "http://127.0.0.1:$LLAMA_PORT/health"; then
+  echo "llama-server is already running at http://127.0.0.1:$LLAMA_PORT - not starting a second one."
+  echo "(If you meant to restart it, stop the running one first: Ctrl+C in its terminal, or"
+  echo "pkill -f llama-server inside the $CONTAINER_NAME container.)"
+  exit 0
+fi
+
+distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
+  -m "$LLAMA_MODEL_PATH" \\
+  -ngl 99 \\
+  -c $LLAMA_CTX_SIZE \\
+  -b $LLAMA_BATCH_SIZE \\
+  -fa on \\
+  --cache-type-k q8_0 --cache-type-v q8_0 \\
+  $FIT_FLAG \\
+  --no-webui \\
+  --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS \\
+  2>&1 | tee "\$LOG_FILE"
+EOF
+  chmod +x "$BIN_DIR/start-local-llama.sh"
+  log "Generated $BIN_DIR/start-local-llama.sh"
+}
+
+# --- Step 9b: desktop icon that opens start-local-llama.sh in its own ---
+# --- terminal window, so starting the model is a single double-click. ---
+build_desktop_launcher() {
+  if [ "$INSTALL_DESKTOP_SHORTCUT" = "yes" ]; then
+    cat > "$BIN_DIR/start-local-llama-desktop.sh" << EOF
+#!/usr/bin/env bash
+# start-local-llama-desktop.sh
+# Generated by install.sh. Double-click target for the "Start Local Model"
+# desktop icon: opens start-local-llama.sh in its own terminal window so you
+# can watch it while you work, without typing anything by hand. Falls back
+# to a copy-paste notification if no terminal emulator can be found.
+
+if curl -s -o /dev/null "http://localhost:$LLAMA_PORT/health"; then
+  notify-send "Local model" "llama-server is already running at http://localhost:$LLAMA_PORT"
+  exit 0
+fi
+
+TERMINAL_CMD=""
+if command -v konsole >/dev/null 2>&1; then
+  TERMINAL_CMD="konsole -e"
+elif command -v gnome-terminal >/dev/null 2>&1; then
+  TERMINAL_CMD="gnome-terminal --"
+elif command -v xterm >/dev/null 2>&1; then
+  TERMINAL_CMD="xterm -e"
+fi
+
+if [ -z "\$TERMINAL_CMD" ]; then
+  notify-send -u critical "Local model: no terminal emulator found" \\
+    "Paste this into a terminal yourself: $BIN_DIR/start-local-llama.sh"
+  exit 1
+fi
+
+\$TERMINAL_CMD bash -c "$BIN_DIR/start-local-llama.sh; echo; echo 'llama-server exited.'; read -p 'Press Enter to close this window.'" &
+disown
+notify-send "Local model" "Starting llama-server in a new terminal window..."
+EOF
+    chmod +x "$BIN_DIR/start-local-llama-desktop.sh"
+
+    cat > "$DESKTOP_DIR/claude-local-start-model.desktop" << EOF
+[Desktop Entry]
+Type=Application
+Name=Start Local Model
+Comment=Launch llama-server for Claude Code local mode in its own terminal window
+Exec=$BIN_DIR/start-local-llama-desktop.sh
+Icon=media-playback-start
+Terminal=false
+Categories=Utility;
+EOF
+    chmod +x "$DESKTOP_DIR/claude-local-start-model.desktop"
+    log "Generated $BIN_DIR/start-local-llama-desktop.sh and its desktop icon"
+    echo "Desktop icon 'Start Local Model' installed - double-click it to launch"
+    echo "llama-server in its own terminal window (falls back to a copy-paste"
+    echo "notification if no terminal emulator is found; not yet verified on"
+    echo "your specific desktop session, check that it actually pops a window)."
+  fi
+}
+
+launch_and_verify() {
+  echo
+  echo "llama-server is ready to launch, but not started automatically."
+  echo "Open another terminal and run this (the wrapper script does the same thing,"
+  echo "printed here in full so you don't have to go find it):"
+  echo
+  echo "  distrobox enter \"$CONTAINER_NAME\" -- \"$LLAMA_SERVER_BIN\" \\"
+  echo "    -m \"$LLAMA_MODEL_PATH\" \\"
+  echo "    -ngl 99 -c $LLAMA_CTX_SIZE -b $LLAMA_BATCH_SIZE \\"
+  echo "    -fa on --cache-type-k q8_0 --cache-type-v q8_0 \\"
+  echo "    $FIT_FLAG \\"
+  echo "    --no-webui \\"
+  echo "    --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS"
+  echo
+  echo "Or just: $BIN_DIR/start-local-llama.sh"
+  echo "Or use the 'Start Local Model' desktop icon (if installed) to open this"
+  echo "in its own terminal window automatically from now on."
+  read -rp "Press Enter here once it's running (or Ctrl+C to skip this check)... " _
+
+  if curl -s -o /dev/null "http://localhost:$LLAMA_PORT/health"; then
+    echo "llama-server is up at http://localhost:$LLAMA_PORT"
+    if command -v nvidia-smi >/dev/null 2>&1; then
+      echo "VRAM after loading:"
+      nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader
+    fi
+
+    if [ "$KV_MODEL" = "probe" ]; then
+      echo
+      echo "KV_MODEL=probe for this profile: the real context size llama.cpp"
+      echo "fit (--fit on) should be in its own log. Grepping for it now - this"
+      echo "pattern (n_ctx) is a best-effort guess at llama.cpp's log format,"
+      echo "NOT confirmed against a real run (see gemma4-support-spec.md"
+      echo "section 5); if nothing useful prints below, check"
+      echo "$HOME/.local/state/llama-server.log yourself for the actual figure."
+      grep -i "n_ctx" "$HOME/.local/state/llama-server.log" 2>/dev/null || \
+        echo "  (no n_ctx line found - check the log file directly)"
+    fi
+
+    # --- Smoke test: a real completion through the PROXY, using the exact
+    # model string Claude Code sends (see litellm_config.yaml), not just a
+    # /health 200. /health only proves the process is listening; it does not
+    # prove the model routing is correct or that a request actually returns
+    # text - both of which have separately broken silently in the past.
+    echo
+    echo "Smoke-testing a real completion through the proxy (this is what Claude Code will see)..."
+    local SMOKE_RESPONSE SMOKE_CONTENT
+    SMOKE_RESPONSE="$(curl -s -X POST "http://localhost:$PROXY_PORT/v1/chat/completions" \
+      -H "Authorization: Bearer $PROXY_MASTER_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"reply with the word: ok"}],"max_tokens":10}')"
+    SMOKE_CONTENT="$(python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.argv[1])
+    msg = data['choices'][0]['message']
+    print((msg.get('content') or msg.get('reasoning_content') or '').strip())
+except Exception:
+    sys.exit(1)
+" "$SMOKE_RESPONSE" 2>/dev/null)"
+    if [ -n "$SMOKE_CONTENT" ]; then
+      echo "Smoke test OK - proxy returned real model output: \"$SMOKE_CONTENT\""
+    else
+      echo "WARNING: smoke test through the proxy did not return usable content." >&2
+      echo "Raw response: $SMOKE_RESPONSE" >&2
+      echo "Claude Code will likely hang or error in local mode until this is fixed." >&2
+      echo "Check: journalctl --user -u litellm-ollama-box.service -n 50" >&2
+    fi
+  else
+    echo "WARNING: llama-server did not respond at http://localhost:$LLAMA_PORT/health." >&2
+    echo "Check the terminal window it's running in for the actual error." >&2
+  fi
+}
+
+# Orchestrates the three functions above, reproducing the original guard:
+# skip the whole step (with an explanatory message) unless both the
+# llama-server binary and a model file resolved earlier.
+run_launcher_step() {
+  if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
+    build_start_script
+    build_desktop_launcher
+    launch_and_verify
+  else
+    echo "Skipping start-local-llama.sh generation: missing llama-server binary or model path."
+    echo "Re-run install.sh once both the build and the download have succeeded."
+  fi
+}
