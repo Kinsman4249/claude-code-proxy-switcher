@@ -1,6 +1,6 @@
 # claude-code-proxy-switcher
 
-An on/off switch for routing Claude Code through a local model instead of your Anthropic Pro/Max subscription, with no API key anywhere and no cloud fallback. When it's off, Claude Code behaves exactly as if this project didn't exist, normal subscription auth, Sonnet and Opus available. When it's on, every model Claude Code might call, main session or sub-agent, routes to a local Qwen3.5-9B model running under llama-server (llama.cpp's own server), meant for small, cheap tasks where you don't want to spend Pro usage at all.
+An on/off switch for routing Claude Code through a local model instead of your Anthropic Pro/Max subscription, with no API key anywhere and no cloud fallback. When it's off, Claude Code behaves exactly as if this project didn't exist, normal subscription auth, Sonnet and Opus available. When it's on, every model Claude Code might call, main session or sub-agent, routes to a local model (Qwen3.5-9B or Gemma 4, your choice - see "Choosing a model" below) running under llama-server (llama.cpp's own server), meant for small, cheap tasks where you don't want to spend Pro usage at all.
 
 ## Why this exists
 
@@ -14,7 +14,47 @@ It does not try to be a hybrid router that transparently falls back to cloud whe
 - `llama-server` from [llama.cpp](https://github.com/ggml-org/llama.cpp) built inside that container. `install.sh` builds it automatically (clones the repo, builds with CUDA) if it isn't already on `$PATH` there.
 - [LiteLLM](https://docs.litellm.ai) (`pip install 'litellm[proxy]'`) installed inside that container.
 - Claude Code, used either via the CLI or the VS Code/VSCodium extension.
-- Roughly 8 GB of VRAM headroom to run Qwen3.5-9B at a reasonable quant and context length.
+- Roughly 8 GB of VRAM headroom to run any of the supported models at a reasonable quant and context length.
+
+## Choosing a model
+
+`install.sh` asks for a "model profile" - see `model-profiles/*.sh` - which sets every model-specific default below it (repo, quant sizes, layer count, KV-cache sizing behaviour, speculative-decoding wiring). Three are available:
+
+| | Qwen3.5-9B-MTP | Gemma 4 E2B | Gemma 4 E4B |
+| --- | --- | --- |
+| Effective params | 9B | 2.3B | 4.5B |
+| Params incl. embeddings | 9B | 5.1B | 8B |
+| Layers | 32 | 35 | 42 |
+| Max context | - | 128K | 128K |
+| Tau2 tool-use average | - | 24.5% | 42.2% |
+| LiveCodeBench v6 | - | 44.0% | 52.0% |
+| Speculative decoding | self-contained MTP head | separate drafter (UNVERIFIED filenames) | separate drafter (UNVERIFIED filenames) |
+
+Tau2/LiveCodeBench figures are from Google's Gemma 4 model card ([huggingface.co/google/gemma-4-E4B](https://huggingface.co/google/gemma-4-E4B)); Qwen3.5-9B wasn't benchmarked against the same suite by this project, hence the blanks.
+
+**E2B is a poor fit for Claude Code's tool-calling loop** - less than a third the Tau2 tool-use score of E4B - and is offered mainly for completeness on tighter VRAM budgets. If you're picking a Gemma profile, default to E4B.
+
+**The Gemma profiles are not fully wired up yet.** `model-profiles/gemma4-e2b.sh` and `model-profiles/gemma4-e4b.sh` ship with several UNVERIFIED placeholders (drafter model repo/filenames, the Per-Layer-Embedding tensor name, exact quant file sizes) left empty on purpose rather than guessed, per this project's policy of never inventing a `llama-server` flag or filename it hasn't confirmed. `install.sh` treats each empty placeholder as "feature not available yet" and skips it with a warning rather than emit something broken. Qwen3.5-9B-MTP remains the only profile that's been run end-to-end.
+
+### Per-Layer Embeddings: the opposite VRAM trade from dense-FFN offload
+
+Gemma 4's Per-Layer Embeddings (PLE) are large lookup tables (one small embedding table per decoder layer, per token) that account for most of the gap between "effective" and "with embeddings" params in the table above. Because they're pure lookups with no matrix multiply, offloading them to system RAM (`--override-tensor` on the PLE tensor, prompted by `install.sh` when a profile's `PLE_TENSOR_REGEX` is set) costs one small host-memory read per token - cheap.
+
+This is the **opposite** tradeoff from the dense-FFN offload option covered below in "Getting more headroom than that": offloading a full FFN matrix costs a real GEMM's worth of PCIe/RAM bandwidth per token, which is why this project defaults that option light. PLE offload has no such cost, so it defaults to **on** whenever it's available. Don't confuse the two just because both use `--override-tensor` under the hood.
+
+PLE weights are also reported to be sensitive to quantization noise, and an now-closed llama.cpp issue ([#22243](https://github.com/ggml-org/llama.cpp/issues/22243)) questioned whether llama.cpp's forward graph implements the PLE injection pipeline correctly at all - the issue shows no linked PR or stated resolution, so treat PLE correctness in whatever `llama-server` build you're running as unverified until you've eyeballed a coherence check yourself (deterministic prompt, temp 0, compared against the same prompt through Ollama or `transformers`). Prefer Google's own QAT Q4_0 GGUF or an Unsloth UD dynamic quant over a plain `llama-quantize` output for this reason.
+
+### Multimodal weights
+
+Gemma 4 E2B/E4B are multimodal (text, image, audio) upstream. This project only ever talks to the model through a text-only OpenAI-compatible chat endpoint - `install.sh` never passes `--mmproj`, and excludes any `mmproj-*.gguf` file from both the download filter and the main-model file search, so a multimodal projector file that happens to ship in the same repo doesn't get pulled in or mistaken for the main weights.
+
+### Thinking mode
+
+Gemma 4's "thinking mode" is triggered by putting a `<|think|>` token at the start of the system prompt, not a CLI flag - this project never injects it. For a mechanical Claude Code tool-calling workload, thinking output is pure added latency and token cost with no benefit, so it's deliberately left off. Add the token to a system prompt yourself if you specifically want it.
+
+### TurboQuant: considered, not adopted
+
+Not adopted, revisit later. TurboQuant is a Google DeepMind KV-cache quantization technique (not weight quantization - some third-party pages describe it as ternary 1.58-bit weight quantization, which is a conflation with BitNet-style TQ formats and is wrong). The upstream llama.cpp integration ([PR #21089](https://github.com/ggml-org/llama.cpp/pull/21089), adding `tbq3_0`/`tbq4_0` KV cache types) was still open, not merged, and explicitly CPU-only as of this writing - using it on this project's CUDA setup would mean keeping the KV cache off the GPU (`--no-kv-offload`), which is the same slow path this project already documents and defaults off. Community CUDA forks exist but pinning to one breaks the "build llama.cpp from master" install path. Revisit if/when that PR (or a successor with CUDA kernels) merges to master. This project keeps `--cache-type-k q8_0 --cache-type-v q8_0`.
 
 ## Quickstart
 
@@ -152,12 +192,25 @@ There's no automated test suite (this is glue between existing tools, not a libr
 4. With local mode off, Claude Code behaves identically to a machine that never installed this project.
 5. `install.sh` re-run a second time with saved answers completes without prompting for anything already answered, and does not duplicate or corrupt existing systemd units or `settings.json` content.
 
+Gemma-profile-specific, not yet performed (needs a live `llama-server` build and downloaded Gemma weights, neither present as of this refactor):
+
+6. `install.sh` run with profile `qwen35-9b` produces a `start-local-llama.sh` with the same effective flags as before the model-profile refactor, given the same answers - the regression gate for that refactor.
+7. `install.sh` run with profile `gemma4-e4b` downloads to `~/models/gemma4-e4b/`, resolves exactly one main GGUF, and either resolves a drafter or cleanly omits the spec flags.
+8. Generated command contains no `--swa-full`, no `--mmproj`, and no `--spec-type` without a matching `-md` for Gemma profiles.
+9. Server starts, `/health` returns 200, `nvidia-smi` shows measured VRAM.
+10. PLE offload on vs off: record both VRAM figures here once measured.
+11. Coherence check per "Per-Layer Embeddings" above passes.
+12. Proxy smoke test returns real text.
+13. A real Claude Code session in local mode completes a file-search and a small edit using tool calls, on a Gemma profile.
+
 ## Known limitations
 
 - Whether `notify-send` on your specific desktop session honors `urgency=critical` and stays up until clicked, rather than timing out, isn't confirmed against every notification daemon.
 - `litellm_config.yaml` uses a wildcard `model_name: "*"` entry (confirmed working against LiteLLM 1.93.0), so any model string Claude Code sends routes to the local backend - a future Claude Code release using a new dated ID no longer breaks this. Enable `log_level: DEBUG` in the config if you want to see what's actually arriving.
 - This project assumes an existing Distrobox container with working GPU passthrough. `install.sh` checks that the container exists and exits with an error if it doesn't, it does not attempt to create or configure one, since getting GPU passthrough right on container creation isn't something worth guessing at silently. It does build `llama-server` itself inside the container if missing, but assumes CUDA/driver access already works there (e.g. Ollama or another GPU workload has run in it before).
 - Starting the model server is still a manual step (open a terminal, run `start-local-llama.sh`) rather than systemd-managed; backgrounding a long-running process inside a `distrobox enter -- bash -lc` exec session is unreliable (the container runtime can tear it down when that session exits), see `todo.md`.
+- The Gemma 4 profiles are not verified end-to-end - see "Choosing a model" above. Several values in `model-profiles/gemma4-e2b.sh` and `model-profiles/gemma4-e4b.sh` are placeholders pending a live-build check, and `install.sh` treats them as "unavailable" rather than guessing.
+- The Gemma KV-cache probe (`KV_MODEL=probe`, `--fit on`) greps the server's own log for its measured context size using an `n_ctx` pattern that hasn't been confirmed against a real `llama-server` log format - if it prints nothing useful, check `~/.local/state/llama-server.log` directly.
 
 ## License
 
