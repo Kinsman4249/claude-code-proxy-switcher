@@ -665,33 +665,50 @@ else
 fi
 
 # --- Step 9: download the model, inside the container ---
+# Each profile gets its own directory (~/models/$MODEL_PROFILE/) rather than
+# a shared search across the whole home directory - with more than one model
+# family downloaded, a bare "find ~" glob can match the wrong family's file,
+# or pick up a drafter/mmproj file that happens to share the quant fragment.
+# The main-model search also excludes drafter ("mtp-*"/"*assistant*") and
+# multimodal-projector ("mmproj-*") files explicitly, since those are real
+# GGUF files that would otherwise satisfy the same *.gguf glob.
+MODEL_DIR="\$HOME/models/$MODEL_PROFILE"
+MAIN_MODEL_FIND="find '$MODEL_DIR' -maxdepth 1 -iname '*$GGUF_PATTERN*.gguf' \
+  -not -iname 'mtp-*' -not -iname '*assistant*' -not -iname 'mmproj-*' 2>/dev/null"
+
 LLAMA_MODEL_PATH=""
 if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
   echo "Checking whether a *$GGUF_PATTERN*.gguf file is already downloaded inside $CONTAINER_NAME..."
-  ALREADY_HAVE="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "find ~ -maxdepth 3 -iname '*$GGUF_PATTERN*.gguf' 2>/dev/null | head -n1")"
+  MATCHES="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "mkdir -p '$MODEL_DIR'; $MAIN_MODEL_FIND")"
+  MATCH_COUNT_MODEL="$(echo "$MATCHES" | grep -c . || true)"
 
-  if [ -n "$ALREADY_HAVE" ]; then
-    LLAMA_MODEL_PATH="$ALREADY_HAVE"
+  if [ "$MATCH_COUNT_MODEL" = "1" ]; then
+    LLAMA_MODEL_PATH="$MATCHES"
     echo "Already have it at $LLAMA_MODEL_PATH, skipping download."
+  elif [ "$MATCH_COUNT_MODEL" -gt 1 ] 2>/dev/null; then
+    echo "More than one matching GGUF already in $MODEL_DIR - pick the one to use:"
+    echo "$MATCHES"
+    read -rp "Paste the full path to use: " LLAMA_MODEL_PATH
   else
     echo "Downloading a *$GGUF_PATTERN*.gguf file from $HF_REPO inside $CONTAINER_NAME, this is a multi-GB download..."
     distrobox enter "$CONTAINER_NAME" -- bash -lc "
+      mkdir -p '$MODEL_DIR' &&
       (python3 -m pip --version >/dev/null 2>&1 || sudo dnf install -y python3-pip) &&
       sudo python3 -m pip install -U huggingface_hub --break-system-packages -q &&
-      hf download '$HF_REPO' --include '*$GGUF_PATTERN*.gguf' --local-dir ~/
+      hf download '$HF_REPO' --include '*$GGUF_PATTERN*.gguf' --exclude 'mmproj-*' --local-dir '$MODEL_DIR'
     "
     if [ $? -ne 0 ]; then
       echo "WARNING: model download failed. Check the exact quant fragment on the" >&2
       echo "repo's file listing and re-run this script, or run the hf download" >&2
       echo "command manually inside the container." >&2
     else
-      LLAMA_MODEL_PATH="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "find ~ -maxdepth 3 -iname '*$GGUF_PATTERN*.gguf' 2>/dev/null | head -n1")"
+      LLAMA_MODEL_PATH="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "$MAIN_MODEL_FIND" | head -n1)"
       log "Downloaded to $LLAMA_MODEL_PATH"
     fi
   fi
 else
   # Re-runs with DOWNLOAD_MODEL_NOW=no still need a path if one was found before.
-  LLAMA_MODEL_PATH="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "find ~ -maxdepth 3 -iname '*$GGUF_PATTERN*.gguf' 2>/dev/null | head -n1")"
+  LLAMA_MODEL_PATH="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "$MAIN_MODEL_FIND" | head -n1)"
   echo "Skipped model download. Run this script again with 'yes' when ready."
 fi
 
