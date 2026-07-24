@@ -250,61 +250,85 @@ if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
   ask LLAMA_BATCH_SIZE "Batch size"
 
   # --- Context-length recommendation ---
-  # Qwen3.5-9B is a hybrid dense model: 32 layers total, but only every 4th
-  # layer (8 of 32) is full quadratic attention - the other 24 are
-  # linear/DeltaNet attention with a small fixed-size recurrent state that
-  # does NOT grow with context length. Only the 8 full-attention layers
-  # matter for KV cache sizing (confirmed from Qwen/Qwen3.5-9B's
-  # config.json: full_attention_interval=4, num_key_value_heads=4,
-  # head_dim=256; the model has no MoE layers at all - mlp_only_layers is
-  # empty and there's no num_experts field, so --n-cpu-moe would be a
-  # no-op here and isn't used).
-  #
-  # bytes/token = 2(K+V) x num_kv_heads(4) x head_dim(256) x attn_layers(8)
-  #             x bytes_per_element(1 for q8_0, always on in this project)
-  #             = 16384 bytes/token = 16 KiB/token
-  BYTES_PER_TOKEN=16384
+  # KV_MODEL=manual (Qwen only): the bytes/token formula is fully worked out
+  # from the model's published config, so compute a recommendation directly.
+  # KV_MODEL=probe (Gemma): Gemma 4's hybrid local/global attention with
+  # unified K/V on global layers has no simple closed-form bytes/token - see
+  # model-profiles/gemma4-e*b.sh. Don't hand-roll a formula for it. Instead
+  # let llama.cpp fit the context itself (--fit on, set below in Step 10)
+  # and read the measured number back from the log after first start.
+  if [ "$KV_MODEL" = "manual" ]; then
+    # Qwen3.5-9B is a hybrid dense model: 32 layers total, but only every 4th
+    # layer (8 of 32) is full quadratic attention - the other 24 are
+    # linear/DeltaNet attention with a small fixed-size recurrent state that
+    # does NOT grow with context length. Only the 8 full-attention layers
+    # matter for KV cache sizing (confirmed from Qwen/Qwen3.5-9B's
+    # config.json: full_attention_interval=4, num_key_value_heads=4,
+    # head_dim=256; the model has no MoE layers at all - mlp_only_layers is
+    # empty and there's no num_experts field, so --n-cpu-moe would be a
+    # no-op here and isn't used).
+    #
+    # bytes/token = 2(K+V) x num_kv_heads(4) x head_dim(256) x attn_layers(8)
+    #             x bytes_per_element(1 for q8_0, always on in this project)
+    #             = 16384 bytes/token = 16 KiB/token
+    # (BYTES_PER_TOKEN itself comes from the profile - see model-profiles/
+    # qwen35-9b.sh - this comment documents where that number came from.)
 
-  # Compute buffer scales roughly with batch size; ~1508 MiB was measured at
-  # batch 2048 in community reports, scaled linearly here as an estimate.
-  COMPUTE_BUF_MIB=$(( LLAMA_BATCH_SIZE * 1508 / 2048 ))
-  # CUDA context, desktop compositor, and the linear-attention layers' small
-  # fixed recurrent state, bundled into one conservative fixed reserve.
-  FIXED_OVERHEAD_MIB=350
+    # Compute buffer scales roughly with batch size; ~1508 MiB was measured at
+    # batch 2048 in community reports, scaled linearly here as an estimate.
+    COMPUTE_BUF_MIB=$(( LLAMA_BATCH_SIZE * 1508 / 2048 ))
+    # CUDA context, desktop compositor, and the linear-attention layers' small
+    # fixed recurrent state, bundled into one conservative fixed reserve.
+    FIXED_OVERHEAD_MIB=350
 
-  if [ -n "${QUANT_WEIGHT_MIB:-}" ]; then
-    AVAILABLE_KV_MIB=$(( GPU_VRAM_MIB - QUANT_WEIGHT_MIB - COMPUTE_BUF_MIB - FIXED_OVERHEAD_MIB ))
-    echo
-    echo "Estimate: ${GPU_VRAM_MIB} MiB VRAM - ${QUANT_WEIGHT_MIB} MiB weights"
-    echo "  - ${COMPUTE_BUF_MIB} MiB compute buffer - ${FIXED_OVERHEAD_MIB} MiB fixed"
-    echo "  overhead = ${AVAILABLE_KV_MIB} MiB left for KV cache."
-    if [ "$AVAILABLE_KV_MIB" -gt 0 ]; then
-      MAX_TOKENS=$(( AVAILABLE_KV_MIB * 1024 * 1024 / BYTES_PER_TOKEN ))
-      REC_CTX=$(( MAX_TOKENS * 85 / 100 / 1024 * 1024 ))
-      if [ "$REC_CTX" -lt 1024 ]; then REC_CTX=1024; fi
-      echo "  That's roughly ${MAX_TOKENS} tokens of KV cache at this quant/batch"
-      echo "  size; recommending $REC_CTX tokens of context (15% safety margin,"
-      echo "  rounded down), press Enter below to accept it."
-      LLAMA_CTX_SIZE="$REC_CTX"
+    if [ -n "${QUANT_WEIGHT_MIB:-}" ]; then
+      AVAILABLE_KV_MIB=$(( GPU_VRAM_MIB - QUANT_WEIGHT_MIB - COMPUTE_BUF_MIB - FIXED_OVERHEAD_MIB ))
+      echo
+      echo "Estimate: ${GPU_VRAM_MIB} MiB VRAM - ${QUANT_WEIGHT_MIB} MiB weights"
+      echo "  - ${COMPUTE_BUF_MIB} MiB compute buffer - ${FIXED_OVERHEAD_MIB} MiB fixed"
+      echo "  overhead = ${AVAILABLE_KV_MIB} MiB left for KV cache."
+      if [ "$AVAILABLE_KV_MIB" -gt 0 ]; then
+        MAX_TOKENS=$(( AVAILABLE_KV_MIB * 1024 * 1024 / BYTES_PER_TOKEN ))
+        REC_CTX=$(( MAX_TOKENS * 85 / 100 / 1024 * 1024 ))
+        if [ "$REC_CTX" -lt 1024 ]; then REC_CTX=1024; fi
+        echo "  That's roughly ${MAX_TOKENS} tokens of KV cache at this quant/batch"
+        echo "  size; recommending $REC_CTX tokens of context (15% safety margin,"
+        echo "  rounded down), press Enter below to accept it."
+        LLAMA_CTX_SIZE="$REC_CTX"
+      else
+        echo "  WARNING: that's negative - this quant doesn't fit at this batch"
+        echo "  size and VRAM budget with any context at all. Lower the batch"
+        echo "  size above, or pick a smaller quant, and re-run this script."
+        LLAMA_CTX_SIZE=4096
+      fi
     else
-      echo "  WARNING: that's negative - this quant doesn't fit at this batch"
-      echo "  size and VRAM budget with any context at all. Lower the batch"
-      echo "  size above, or pick a smaller quant, and re-run this script."
-      LLAMA_CTX_SIZE=4096
+      echo
+      echo "No quant size given, can't estimate a safe context length. Falling"
+      echo "back to a conservative default; watch the VRAM check after you"
+      echo "start llama-server and reduce this if it's too much."
     fi
+
+    echo
+    echo "Context window (-c / --ctx-size). Larger lets Claude Code's full prompt fit"
+    echo "without truncation, but costs more VRAM on top of the quant above."
+    echo "20480 truncated on real Claude Code requests in earlier testing"
+    echo "(system prompt + tool schemas alone can be tens of thousands of tokens)."
+    ask LLAMA_CTX_SIZE "Context length in tokens"
   else
     echo
-    echo "No quant size given, can't estimate a safe context length. Falling"
-    echo "back to a conservative default; watch the VRAM check after you"
-    echo "start llama-server and reduce this if it's too much."
+    echo "This profile's KV cache sizing is measured, not estimated (Gemma 4's"
+    echo "hybrid attention has no simple closed-form bytes/token - see"
+    echo "model-profiles/$MODEL_PROFILE.sh). llama.cpp will size the context"
+    echo "itself (--fit on) the first time the server starts, up to the ceiling"
+    echo "you give it below; the REAL number it lands on gets read back from"
+    echo "$HOME/.local/state/llama-server.log and printed after that first"
+    echo "start, not estimated ahead of time."
+    echo
+    echo "Context window ceiling (-c / --ctx-size). Larger lets Claude Code's"
+    echo "full prompt fit without truncation, but --fit on will refuse to"
+    echo "exceed available VRAM, so this is a cap, not a guarantee."
+    ask LLAMA_CTX_SIZE "Context length ceiling in tokens"
   fi
-
-  echo
-  echo "Context window (-c / --ctx-size). Larger lets Claude Code's full prompt fit"
-  echo "without truncation, but costs more VRAM on top of the quant above."
-  echo "20480 truncated on real Claude Code requests in earlier testing"
-  echo "(system prompt + tool schemas alone can be tens of thousands of tokens)."
-  ask LLAMA_CTX_SIZE "Context length in tokens"
 
   echo
   echo "Need more headroom than the above gives you? Nothing overflows to RAM"
@@ -840,6 +864,27 @@ if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
       ;;
   esac
 
+  # --fit off (manual KV sizing, Qwen): the context/VRAM budget above was
+  # computed by hand, and --fit on would fight that manual -ngl/--override-
+  # tensor budget - see the discussion linked below.
+  # --fit on (probe KV sizing, Gemma): no hand-rolled budget exists for this
+  # profile, so let llama.cpp size the context itself, up to the ceiling
+  # you gave it, and read back what it actually picked (see Step 11 below).
+  if [ "$KV_MODEL" = "manual" ]; then
+    FIT_FLAG="--fit off"
+    FIT_COMMENT="# --fit off               disable llama.cpp's automatic VRAM-fitting pass: it
+#                          can't override the manual -ngl/--override-tensor
+#                          budget below, so left on it only produces a
+#                          harmless but alarming-looking \"common_fit_params:
+#                          ... abort\" warning on every startup (see
+#                          https://github.com/ggml-org/llama.cpp/discussions/18049)"
+  else
+    FIT_FLAG="--fit on"
+    FIT_COMMENT="# --fit on                let llama.cpp size the KV cache itself, up to -c
+#                          below as a ceiling - this profile has no manual
+#                          KV-sizing formula (see model-profiles/$MODEL_PROFILE.sh)"
+  fi
+
   cat > "$BIN_DIR/start-local-llama.sh" << EOF
 #!/usr/bin/env bash
 # start-local-llama.sh
@@ -850,17 +895,16 @@ if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
 # -fa on                  flash attention (required for KV cache quant below)
 # --cache-type-k/v q8_0   Q8 KV cache quantization, halves KV cache VRAM cost
 $SPEC_COMMENT
-# --fit off               disable llama.cpp's automatic VRAM-fitting pass: it
-#                          can't override the manual -ngl/--override-tensor
-#                          budget below, so left on it only produces a
-#                          harmless but alarming-looking "common_fit_params:
-#                          ... abort" warning on every startup (see
-#                          https://github.com/ggml-org/llama.cpp/discussions/18049)
+$FIT_COMMENT
 # --no-webui              disable llama.cpp's built-in browser chat UI - you
 #                          only talk to this server through Claude Code /
 #                          the API, never a browser, so there's no reason to
 #                          serve it (doesn't touch VRAM either way, it's just
 #                          static asset serving on the same HTTP listener)
+# (sliding-window attention: llama.cpp only allocates the local-attention
+#  window's worth of KV cache by default, not the full context, on models
+#  that use it - this is the default and stays on; --swa-full is never
+#  passed here, which would disable that saving)
 # -b $LLAMA_BATCH_SIZE               batch size (llama.cpp's own default is 512)
 $([ -n "$OT_ARGS" ] && echo "# --override-tensor          last $LLAMA_CPU_FFN_LAYERS layers' FFN weights forced to CPU RAM")
 $([ -n "$KVOFFLOAD_ARGS" ] && echo "# --no-kv-offload            whole KV cache kept in system RAM instead of VRAM")
@@ -889,7 +933,7 @@ distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
   -fa on \\
   --cache-type-k q8_0 --cache-type-v q8_0 \\
 $([ -n "$SPEC_ARGS" ] && echo " $SPEC_ARGS \\")
-  --fit off \\
+  $FIT_FLAG \\
   --no-webui \\
 $([ -n "$SAMPLING_ARGS" ] && echo " $SAMPLING_ARGS \\")
   --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS \\
@@ -963,7 +1007,7 @@ EOF
   echo "    -ngl 99 -c $LLAMA_CTX_SIZE -b $LLAMA_BATCH_SIZE \\"
   echo "    -fa on --cache-type-k q8_0 --cache-type-v q8_0 \\"
   [ -n "$SPEC_ARGS" ] && echo "   $SPEC_ARGS \\"
-  echo "    --fit off \\"
+  echo "    $FIT_FLAG \\"
   echo "    --no-webui \\"
   [ -n "$SAMPLING_ARGS" ] && echo "   $SAMPLING_ARGS \\"
   echo "    --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS"
@@ -978,6 +1022,18 @@ EOF
     if command -v nvidia-smi >/dev/null 2>&1; then
       echo "VRAM after loading:"
       nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader
+    fi
+
+    if [ "$KV_MODEL" = "probe" ]; then
+      echo
+      echo "KV_MODEL=probe for this profile: the real context size llama.cpp"
+      echo "fit (--fit on) should be in its own log. Grepping for it now - this"
+      echo "pattern (n_ctx) is a best-effort guess at llama.cpp's log format,"
+      echo "NOT confirmed against a real run (see gemma4-support-spec.md"
+      echo "section 5); if nothing useful prints below, check"
+      echo "$HOME/.local/state/llama-server.log yourself for the actual figure."
+      grep -i "n_ctx" "$HOME/.local/state/llama-server.log" 2>/dev/null || \
+        echo "  (no n_ctx line found - check the log file directly)"
     fi
 
     # --- Smoke test: a real completion through the PROXY, using the exact
