@@ -63,6 +63,7 @@ LLAMA_CPU_FFN_LAYERS="${LLAMA_CPU_FFN_LAYERS:-2}"          # last N layers' FFN 
                                                             # (light default: dense FFN offload costs more per
                                                             # layer than the equivalent MoE trick, see prompt below)
 LLAMA_NO_KV_OFFLOAD="${LLAMA_NO_KV_OFFLOAD:-no}"           # whole KV cache in system RAM instead of VRAM
+KEEP_PLE_ON_CPU="${KEEP_PLE_ON_CPU:-yes}"                  # Per-Layer Embedding tables in system RAM (Gemma only)
 LLAMA_SPEC_DRAFT_N="${LLAMA_SPEC_DRAFT_N:-2}"
 LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-}"                   # resolved during Step 7, cached here
 PROXY_DEBUG_LOG="${PROXY_DEBUG_LOG:-no}"
@@ -122,6 +123,7 @@ LLAMA_CTX_SIZE="$LLAMA_CTX_SIZE"
 LLAMA_BATCH_SIZE="$LLAMA_BATCH_SIZE"
 LLAMA_CPU_FFN_LAYERS="$LLAMA_CPU_FFN_LAYERS"
 LLAMA_NO_KV_OFFLOAD="$LLAMA_NO_KV_OFFLOAD"
+KEEP_PLE_ON_CPU="$KEEP_PLE_ON_CPU"
 LLAMA_SPEC_DRAFT_N="$LLAMA_SPEC_DRAFT_N"
 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN"
 PROXY_DEBUG_LOG="$PROXY_DEBUG_LOG"
@@ -343,12 +345,28 @@ if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
   echo "   than VRAM can hold and can live with slower responses."
   ask LLAMA_NO_KV_OFFLOAD "Move the whole KV cache to system RAM? (yes/no)"
 
+  if [ -n "${PLE_TENSOR_REGEX:-}" ]; then
+    echo
+    echo "3) Keep Per-Layer Embedding (PLE) tables in system RAM instead of VRAM"
+    echo "   (--override-tensor on the PLE tensors specifically). This is the"
+    echo "   OPPOSITE tradeoff from option 1 above, not the same trick again:"
+    echo "   PLE tables are pure per-token lookups, no matrix multiply, so"
+    echo "   moving them to system RAM costs one small host-memory read per"
+    echo "   token instead of a full GEMM's worth of PCIe/RAM bandwidth. That"
+    echo "   makes this a large-VRAM-for-little-speed trade, unlike the dense"
+    echo "   FFN offload above, which this project deliberately defaults light"
+    echo "   on for the opposite reason. Defaulting to 'yes' for this profile."
+    ask KEEP_PLE_ON_CPU "Keep Per-Layer Embedding tables in system RAM? (yes/no)"
+  else
+    KEEP_PLE_ON_CPU="no"
+  fi
+
   echo
-  echo "Note: neither of the above feeds back into the context recommendation"
-  echo "above - it was computed assuming everything stays on GPU. If you turn"
-  echo "either on, check the real VRAM reading after starting the server (see"
-  echo "below), then re-run this script and raise the context/quant if there's"
-  echo "more room than the recommendation assumed."
+  echo "Note: none of the VRAM-headroom options above feed back into the"
+  echo "context recommendation above - it was computed assuming everything"
+  echo "stays on GPU. If you turn any on, check the real VRAM reading after"
+  echo "starting the server (see below), then re-run this script and raise"
+  echo "the context/quant if there's more room than the recommendation assumed."
 
   if [ "$SPEC_MODE" = "self-mtp" ]; then
     echo
@@ -774,7 +792,13 @@ if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
   if [ "$LLAMA_NO_KV_OFFLOAD" = "yes" ]; then
     KVOFFLOAD_ARGS=" --no-kv-offload"
   fi
-  EXTRA_FLAGS="$OT_ARGS$KVOFFLOAD_ARGS"
+  # Kept separate from OT_ARGS on purpose (see the prompt above): this is the
+  # opposite tradeoff from the dense-FFN offload, not the same knob again.
+  PLE_OFFLOAD_ARGS=""
+  if [ -n "${PLE_TENSOR_REGEX:-}" ] && [ "$KEEP_PLE_ON_CPU" = "yes" ]; then
+    PLE_OFFLOAD_ARGS=" --override-tensor \"${PLE_TENSOR_REGEX}=CPU\""
+  fi
+  EXTRA_FLAGS="$OT_ARGS$KVOFFLOAD_ARGS$PLE_OFFLOAD_ARGS"
 
   # Sampling defaults from the model profile, set on the server so they
   # apply regardless of what the client sends. Empty in a profile (Qwen)
@@ -840,6 +864,7 @@ $SPEC_COMMENT
 # -b $LLAMA_BATCH_SIZE               batch size (llama.cpp's own default is 512)
 $([ -n "$OT_ARGS" ] && echo "# --override-tensor          last $LLAMA_CPU_FFN_LAYERS layers' FFN weights forced to CPU RAM")
 $([ -n "$KVOFFLOAD_ARGS" ] && echo "# --no-kv-offload            whole KV cache kept in system RAM instead of VRAM")
+$([ -n "$PLE_OFFLOAD_ARGS" ] && echo "# --override-tensor          Per-Layer Embedding tables kept in system RAM (lookup-only, cheap to offload)")
 $([ -n "$SAMPLING_ARGS" ] && echo "# --temp/--top-p/--top-k     sampling defaults from the $PROFILE_NAME model card")
 # LOG_FILE            every run's output also goes here (overwritten each
 #                      start, not appended) so a crash is diagnosable even if
