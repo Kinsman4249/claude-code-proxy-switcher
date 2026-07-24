@@ -826,7 +826,6 @@ if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
   if [ -n "${PLE_TENSOR_REGEX:-}" ] && [ "$KEEP_PLE_ON_CPU" = "yes" ]; then
     PLE_OFFLOAD_ARGS=" --override-tensor \"${PLE_TENSOR_REGEX}=CPU\""
   fi
-  EXTRA_FLAGS="$OT_ARGS$KVOFFLOAD_ARGS$PLE_OFFLOAD_ARGS"
 
   # Sampling defaults from the model profile, set on the server so they
   # apply regardless of what the client sends. Empty in a profile (Qwen)
@@ -867,6 +866,14 @@ if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
       SPEC_COMMENT="# (no speculative decoding for this profile)"
       ;;
   esac
+
+  # Everything optional gets folded into one trailing flag string, appended
+  # directly to the --host line below rather than given its own backslash-
+  # continued line - a conditionally-empty line in the middle of a `\`
+  # continuation chain silently breaks the command in two (the shell treats
+  # the blank line as ending it), so nothing optional may sit on its own
+  # line here even when guarded by [ -n ... ].
+  EXTRA_FLAGS="$OT_ARGS$KVOFFLOAD_ARGS$PLE_OFFLOAD_ARGS$SPEC_ARGS$SAMPLING_ARGS"
 
   # --fit off (manual KV sizing, Qwen): the context/VRAM budget above was
   # computed by hand, and --fit on would fight that manual -ngl/--override-
@@ -936,10 +943,8 @@ distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
   -b $LLAMA_BATCH_SIZE \\
   -fa on \\
   --cache-type-k q8_0 --cache-type-v q8_0 \\
-$([ -n "$SPEC_ARGS" ] && echo " $SPEC_ARGS \\")
   $FIT_FLAG \\
   --no-webui \\
-$([ -n "$SAMPLING_ARGS" ] && echo " $SAMPLING_ARGS \\")
   --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS \\
   2>&1 | tee "\$LOG_FILE"
 EOF
@@ -1010,10 +1015,8 @@ EOF
   echo "    -m \"$LLAMA_MODEL_PATH\" \\"
   echo "    -ngl 99 -c $LLAMA_CTX_SIZE -b $LLAMA_BATCH_SIZE \\"
   echo "    -fa on --cache-type-k q8_0 --cache-type-v q8_0 \\"
-  [ -n "$SPEC_ARGS" ] && echo "   $SPEC_ARGS \\"
   echo "    $FIT_FLAG \\"
   echo "    --no-webui \\"
-  [ -n "$SAMPLING_ARGS" ] && echo "   $SAMPLING_ARGS \\"
   echo "    --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS"
   echo
   echo "Or just: $BIN_DIR/start-local-llama.sh"
