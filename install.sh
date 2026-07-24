@@ -328,7 +328,7 @@ if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
   echo "   this entirely (everything on GPU, fastest, and arguably the"
   echo "   better choice for a Haiku-replacement workload where a smaller"
   echo "   quant is usually the better way to free VRAM instead)."
-  ask LLAMA_CPU_FFN_LAYERS "Layers to force onto CPU (0-31, 0 to disable)"
+  ask LLAMA_CPU_FFN_LAYERS "Layers to force onto CPU (0-$((N_LAYERS - 1)), 0 to disable)"
 
   echo
   echo "2) Keep the ENTIRE KV cache in system RAM instead of VRAM"
@@ -702,9 +702,9 @@ if [ -n "$LLAMA_SERVER_BIN" ] && [ -n "$LLAMA_MODEL_PATH" ]; then
   # combination above doesn't fit.
   OT_ARGS=""
   if [ "${LLAMA_CPU_FFN_LAYERS:-0}" -gt 0 ] 2>/dev/null; then
-    FIRST_OFFLOAD=$(( 32 - LLAMA_CPU_FFN_LAYERS ))
+    FIRST_OFFLOAD=$(( N_LAYERS - LLAMA_CPU_FFN_LAYERS ))
     if [ "$FIRST_OFFLOAD" -lt 0 ]; then FIRST_OFFLOAD=0; fi
-    LAYER_RANGE="$(seq -s'|' "$FIRST_OFFLOAD" 31)"
+    LAYER_RANGE="$(seq -s'|' "$FIRST_OFFLOAD" "$((N_LAYERS - 1))")"
     OT_ARGS=" --override-tensor \"blk\\.(${LAYER_RANGE})\\.ffn_(gate|up|down)\\.weight=CPU\""
   fi
   KVOFFLOAD_ARGS=""
