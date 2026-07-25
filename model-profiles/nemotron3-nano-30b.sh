@@ -99,14 +99,23 @@ RECOMMENDED_CTX_8GB=262144
 # Not a Per-Layer-Embeddings model - nothing to offload here.
 PLE_TENSOR_REGEX=""
 
-# From nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16's generation_config.json
-# (temperature 1.0, top_p 1.0 - both effectively "off") and unsloth's own
-# GGUF-repo params file (same temp/top_p, plus top_k -1/min_p 0/repeat_penalty
-# 1 - all disabled). --top-k 0 is llama-server's own way of writing "disabled"
-# (its help text: "0 = disabled"; the model card's "-1" is the transformers/
-# CLI convention, not llama-server's).
-DEFAULT_TEMP="1.0"
-DEFAULT_TOP_P="1.0"
+# CORRECTED 2026-07-25: the model card and unsloth's GGUF-repo params file
+# both give TWO different sampling recipes, not one - "temperature=1.0,
+# top_p=1.0 are recommended for reasoning tasks" vs "temperature=0.6,
+# top_p=0.95 are recommended for tool calling" (confirmed by fetching both
+# nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 and
+# unsloth/Nemotron-3-Nano-30B-A3B-GGUF directly). This profile runs with
+# thinking off (see ENABLE_THINKING/THINKING_KWARG_KEY below) for a
+# Claude-Code/Roo-Code tool-calling workload, so the tool-calling recipe is
+# the correct one here - an earlier version of this profile had wrongly
+# applied the reasoning-task numbers (full-entropy temp 1.0/top_p 1.0, no
+# repetition penalty) to a tool-calling setup, which is a plausible direct
+# cause of degenerate same-tool-call/same-text repeat loops during agentic
+# use. --top-k 0 is llama-server's own way of writing "disabled" (its help
+# text: "0 = disabled"; neither card gives a tool-calling-specific top_k, so
+# this stays disabled rather than guessed).
+DEFAULT_TEMP="0.6"
+DEFAULT_TOP_P="0.95"
 DEFAULT_TOP_K="0"
 
 # CONFIRMED 2026-07-25 on a live RTX 3080 8GB card, IQ4_XS quant, full

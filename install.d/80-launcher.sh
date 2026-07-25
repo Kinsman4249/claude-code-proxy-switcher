@@ -187,6 +187,11 @@ $FIT_COMMENT
 #  that use it - this is the default and stays on; --swa-full is never
 #  passed here, which would disable that saving)
 # -b $LLAMA_BATCH_SIZE               batch size (llama.cpp's own default is 512)
+# -n $LLAMA_N_PREDICT              safety cap on tokens per response - neither
+#                          llama-server nor Roo Code's own client settings cap
+#                          output otherwise, so a degenerate/repeating
+#                          generation would run until it fills the whole
+#                          context instead of stopping on its own
 $([ -n "$OT_ARGS" ] && echo "# --override-tensor          last $LLAMA_CPU_FFN_LAYERS layers' FFN weights forced to CPU RAM")
 $([ -n "$KVOFFLOAD_ARGS" ] && echo "# --no-kv-offload            whole KV cache kept in system RAM instead of VRAM")
 $([ -n "$PLE_OFFLOAD_ARGS" ] && echo "# --override-tensor          Per-Layer Embedding tables kept in system RAM (lookup-only, cheap to offload)")
@@ -211,6 +216,7 @@ distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
   -m "$LLAMA_MODEL_PATH"$NGL_FLAG \\
   -c $LLAMA_CTX_SIZE \\
   -b $LLAMA_BATCH_SIZE \\
+  -n $LLAMA_N_PREDICT \\
   -fa on \\
   --cache-type-k q8_0 --cache-type-v q8_0 \\
   $FIT_FLAG \\
@@ -287,7 +293,7 @@ launch_and_verify() {
   echo
   echo "  distrobox enter \"$CONTAINER_NAME\" -- \"$LLAMA_SERVER_BIN\" \\"
   echo "    -m \"$LLAMA_MODEL_PATH\"$NGL_FLAG \\"
-  echo "    -c $LLAMA_CTX_SIZE -b $LLAMA_BATCH_SIZE \\"
+  echo "    -c $LLAMA_CTX_SIZE -b $LLAMA_BATCH_SIZE -n $LLAMA_N_PREDICT \\"
   echo "    -fa on --cache-type-k q8_0 --cache-type-v q8_0 \\"
   echo "    $FIT_FLAG \\"
   echo "    --no-webui \\"

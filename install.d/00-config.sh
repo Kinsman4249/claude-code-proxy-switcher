@@ -35,6 +35,12 @@ LLAMA_CPU_FFN_LAYERS="${LLAMA_CPU_FFN_LAYERS:-2}"          # last N layers' FFN 
 LLAMA_NO_KV_OFFLOAD="${LLAMA_NO_KV_OFFLOAD:-no}"           # whole KV cache in system RAM instead of VRAM
 KEEP_PLE_ON_CPU="${KEEP_PLE_ON_CPU:-yes}"                  # Per-Layer Embedding tables in system RAM (Gemma only)
 LLAMA_SPEC_DRAFT_N="${LLAMA_SPEC_DRAFT_N:-2}"
+LLAMA_N_PREDICT="${LLAMA_N_PREDICT:-4096}"                 # safety cap on tokens per response (llama-server -n);
+                                                            # neither llama-server nor Roo Code's own client
+                                                            # settings (maxTokens: -1, includeMaxTokens: false)
+                                                            # cap output otherwise, so a degenerate/repeating
+                                                            # generation would run until it fills the whole
+                                                            # context instead of stopping on its own
 LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-}"                   # resolved during Step 7, cached here
 PROXY_DEBUG_LOG="${PROXY_DEBUG_LOG:-no}"
 PROXY_LOG_DEST="${PROXY_LOG_DEST:-console}"                # console or disk
@@ -109,6 +115,7 @@ LLAMA_CPU_FFN_LAYERS="$LLAMA_CPU_FFN_LAYERS"
 LLAMA_NO_KV_OFFLOAD="$LLAMA_NO_KV_OFFLOAD"
 KEEP_PLE_ON_CPU="$KEEP_PLE_ON_CPU"
 LLAMA_SPEC_DRAFT_N="$LLAMA_SPEC_DRAFT_N"
+LLAMA_N_PREDICT="$LLAMA_N_PREDICT"
 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN"
 PROXY_DEBUG_LOG="$PROXY_DEBUG_LOG"
 PROXY_LOG_DEST="$PROXY_LOG_DEST"
