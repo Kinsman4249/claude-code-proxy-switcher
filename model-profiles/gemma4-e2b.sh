@@ -19,12 +19,16 @@ HF_REPO_DEFAULT="unsloth/gemma-4-E2B-it-GGUF"   # google/gemma-4-E2B-GGUF does n
                                                  # published a GGUF for this model; unsloth's quant repo confirmed
                                                  # to exist on the Hub. Quant filenames/sizes still UNVERIFIED below.
 
-DRAFT_REPO=""      # UNVERIFIED: confirm an E2B drafter GGUF repo exists (section 4) before setting this
-DRAFT_PATTERN=""   # UNVERIFIED: exact drafter filename fragment, from the repo's file listing
+DRAFT_REPO="unsloth/gemma-4-E2B-it-GGUF"        # confirmed on the Hub: top-level mtp-gemma-4-E2B-it.gguf
+                                                 # (97817664 bytes, Q8_0 only, single file - not baked into the
+                                                 # main GGUF above, despite living in the same repo). There's also
+                                                 # an MTP/ subfolder with BF16/F16/Q8_0 duplicates of this same
+                                                 # head - the pattern below is scoped to avoid grabbing those too.
+DRAFT_PATTERN="mtp-gemma-4-E2B-it"               # STILL UNVERIFIED: repo/file existence is confirmed, but whether
+                                                 # llama.cpp's -md speculative decoding actually loads this
+                                                 # MTP-specific GGUF (vs. erroring on an unrecognized draft
+                                                 # architecture) needs a live server test, not just a Hub listing.
 SPEC_MODE="draft-model"                         # none | self-mtp | draft-model
-# With DRAFT_REPO/DRAFT_PATTERN empty, install.sh's spec-mode resolution step
-# (section 4) will find no drafter, print a warning, and omit --spec-type
-# entirely rather than emit a broken --spec-type draft-mtp with no -md.
 
 N_LAYERS=35
 
@@ -47,15 +51,17 @@ DEFAULT_TEMP="1.0"
 DEFAULT_TOP_P="0.95"
 DEFAULT_TOP_K="64"
 
+# Sizes confirmed from unsloth/gemma-4-E2B-it-GGUF's own file listing
+# (bytes -> MiB, rounded up): Q4_K_M 3106738272, Q5_K_M 3356037216,
+# Q8_0 5048352864. KV_MODEL=probe means these don't feed the context
+# formula directly (that's Qwen-only, see prompt_vram_and_context in
+# install.d/20-prompts-model.sh) but they're accurate for display now.
 QUANT_MENU=(
-  "Q4_K_M||UNVERIFIED size - check the repo's file listing before relying on the context estimate"
-  "Q5_K_M||UNVERIFIED size - check the repo's file listing before relying on the context estimate"
-  "Q8_0||UNVERIFIED size - check the repo's file listing before relying on the context estimate"
+  "Q4_K_M|2963|confirmed from the repo's file listing"
+  "Q5_K_M|3201|confirmed from the repo's file listing"
+  "Q8_0|4814|confirmed from the repo's file listing"
 )
-QUANT_MENU_INTRO="Gemma 4 E2B from \$HF_REPO. Sizes are NOT filled in below
-(UNVERIFIED - this profile has not been checked against the real repo file
-listing yet); the context-length estimate will be skipped until you supply a
-size manually or pick 'custom' and enter one from the repo page."
+QUANT_MENU_INTRO="Gemma 4 E2B from \$HF_REPO."
 
 # Printed inside the generated start-local-llama.sh header, next to -ngl 99.
 # Kept to one line here - the generator wraps it to fit the comment column.

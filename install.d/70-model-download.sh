@@ -45,7 +45,20 @@ download_main_model() {
         echo "command manually inside the container." >&2
       else
         LLAMA_MODEL_PATH="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "$MAIN_MODEL_FIND" | head -n1)"
-        log "Downloaded to $LLAMA_MODEL_PATH"
+        if [ -z "$LLAMA_MODEL_PATH" ]; then
+          # hf download exited 0 but no matching *.gguf turned up - e.g. a
+          # resumed/interrupted transfer that left only a .incomplete file
+          # behind. Fail loudly here rather than letting this surface later
+          # as 80-launcher.sh's generic "missing model path" skip message,
+          # which wouldn't point back at this download step at all.
+          echo "WARNING: hf download reported success, but no *$GGUF_PATTERN*.gguf" >&2
+          echo "file was found in $MODEL_DIR afterward - the transfer likely got" >&2
+          echo "interrupted partway. Check for a *.incomplete file inside" >&2
+          echo "$MODEL_DIR (distrobox enter \"$CONTAINER_NAME\" -- find '$MODEL_DIR' -name '*.incomplete')" >&2
+          echo "and re-run this script to resume the download." >&2
+        else
+          log "Downloaded to $LLAMA_MODEL_PATH"
+        fi
       fi
     fi
   else
@@ -75,10 +88,30 @@ download_drafter_model() {
           echo "Already have the drafter model at $LLAMA_DRAFT_PATH, skipping download."
         else
           echo "Downloading a *$DRAFT_PATTERN*.gguf drafter from $DRAFT_REPO..."
+          # --exclude 'MTP/*': unsloth's Gemma 4 repos duplicate the top-level
+          # drafter file inside an MTP/ subfolder (BF16/F16/Q8_0 variants) -
+          # without this, the glob below matches those too and downloads an
+          # extra ~340 MiB that never gets used (maxdepth 1 finds only the
+          # top-level file when picking LLAMA_DRAFT_PATH below).
           distrobox enter "$CONTAINER_NAME" -- bash -lc "
-            hf download '$DRAFT_REPO' --include '*$DRAFT_PATTERN*.gguf' --local-dir '$MODEL_DIR'
+            hf download '$DRAFT_REPO' --include '*$DRAFT_PATTERN*.gguf' --exclude 'MTP/*' --local-dir '$MODEL_DIR'
           "
+          if [ $? -ne 0 ]; then
+            echo "WARNING: drafter download failed. Check the exact filename fragment" >&2
+            echo "on the repo's file listing and re-run this script, or run the hf" >&2
+            echo "download command manually inside the container." >&2
+          fi
           LLAMA_DRAFT_PATH="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "$DRAFT_FIND" | head -n1)"
+          if [ -z "$LLAMA_DRAFT_PATH" ]; then
+            # Same failure mode as the main-model download above: a report of
+            # success with no matching file usually means an interrupted
+            # transfer left only a .incomplete file behind.
+            echo "WARNING: hf download reported success, but no *$DRAFT_PATTERN*.gguf" >&2
+            echo "drafter file was found in $MODEL_DIR afterward - the transfer likely" >&2
+            echo "got interrupted partway. Check for a *.incomplete file inside" >&2
+            echo "$MODEL_DIR (distrobox enter \"$CONTAINER_NAME\" -- find '$MODEL_DIR' -name '*.incomplete')" >&2
+            echo "and re-run this script to resume the download." >&2
+          fi
         fi
       else
         LLAMA_DRAFT_PATH="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "$DRAFT_FIND" | head -n1)"
