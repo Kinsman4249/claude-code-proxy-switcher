@@ -174,6 +174,13 @@ prompt_vram_and_context() {
     echo "Context window ceiling (-c / --ctx-size). Larger lets Claude Code's"
     echo "full prompt fit without truncation, but --fit on will refuse to"
     echo "exceed available VRAM, so this is a cap, not a guarantee."
+    if [ -n "${RECOMMENDED_CTX_8GB:-}" ] && [ "$GPU_VRAM_MIB" -le 9000 ] 2>/dev/null; then
+      echo "Confirmed on an 8GB card (see model-profiles/$MODEL_PROFILE.sh): this"
+      echo "profile's own max context (the model won't go higher regardless) fits"
+      echo "with room to spare for the desktop and VSCode/Claude Code, so that's"
+      echo "the suggested default below - lower it only if --fit refuses to start."
+      LLAMA_CTX_SIZE="$RECOMMENDED_CTX_8GB"
+    fi
     ask LLAMA_CTX_SIZE "Context length ceiling in tokens"
   fi
 }

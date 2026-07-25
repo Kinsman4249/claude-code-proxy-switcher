@@ -36,6 +36,25 @@ N_LAYERS=42
 KV_MODEL="probe"                                # manual | probe
 BYTES_PER_TOKEN=                                # unused when KV_MODEL=probe
 
+# CONFIRMED 2026-07-24 on a live RTX 3080 8GB (8192 MiB) card, this profile's
+# Q4_K_M quant, -b 512, q8_0 KV cache, MTP drafter loaded, all 42 layers on
+# GPU (no --override-tensor FFN offload needed): the model's own
+# gemma4.context_length metadata caps out at 131072 tokens, and running at
+# that FULL ceiling only used 5970 MiB VRAM - 2222 MiB left over for the
+# desktop compositor, VSCode, and the Claude Code extension. (VSCodium's own
+# GPU process wasn't even visible in nvidia-smi at the time this was
+# measured - Electron's GPU footprint here is close to zero in practice, but
+# the 2222 MiB headroom is kept as a safety margin rather than pushing past
+# the model's own max anyway, since 131072 is already a hard ceiling.)
+# Because most of this model's 42 layers use a 512-token sliding window
+# (gemma4.attention.sliding_window_pattern in the GGUF) and only a handful of
+# global-attention layers scale KV with full context, VRAM cost grows much
+# slower than context length here - unlike Qwen3.5-9B's manual formula. Only
+# confirmed on an 8GB card; not re-measured for other VRAM sizes, so this is
+# used as the ask() default only, not a hard override - a smaller card should
+# still lower this if --fit refuses to allocate it.
+RECOMMENDED_CTX_8GB=131072
+
 # UNVERIFIED: exact GGUF tensor name for Per-Layer Embeddings. On Gemma 3n it
 # was per_layer_token_embd.weight; do not assume Gemma 4 matches without
 # checking `gguf_dump.py` or llama-server's own startup tensor listing against
