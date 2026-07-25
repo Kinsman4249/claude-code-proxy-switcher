@@ -55,6 +55,43 @@ BYTES_PER_TOKEN=                                # unused when KV_MODEL=probe
 # still lower this if --fit refuses to allocate it.
 RECOMMENDED_CTX_8GB=131072
 
+# QUANT COMPARISON, same RTX 3080 8GB card, 2026-07-24 (round two - Q5_K_M
+# benchmark). Re-measured Q4_K_M in the same session as Q5_K_M, same flags
+# (-c 131072, --fit on, -b 512, q8_0 KV, MTP drafter, no --override-tensor)
+# so the two numbers are directly comparable - nvidia-smi's per-process
+# reading for the llama-server PID itself, not the system total:
+#   Q4_K_M (4747 MiB file): 5584 MiB VRAM
+#   Q5_K_M (5228 MiB file): 6066 MiB VRAM
+# Delta (482 MiB VRAM) matches the file-size delta (481 MiB) almost exactly -
+# llama.cpp loads quantized weights straight into VRAM without dequantizing,
+# so VRAM cost = file size + a constant ~838 MiB (KV cache + compute buffers
+# + drafter), and that constant held equal across both runs since ctx and
+# every other flag were identical. Both quants load at the full 131072
+# ceiling with room to spare.
+#
+# NOTE: this same-session Q4_K_M figure (5584 MiB) does not match the
+# earlier CONFIRMED figure above (5970 MiB total, i.e. ~5959 MiB
+# process-only) - not reconciled. Possible causes: that measurement predates
+# this session and may have used a slightly different llama.cpp build,
+# --override-tensor state, or drafter config than recorded. Trust the
+# 5584/6066 pair for relative (quant-to-quant) comparisons - they were
+# measured back-to-back under identical conditions - but treat either
+# absolute number with a margin of error until re-verified.
+#
+# Q8_0 (7814 MiB file) extrapolated (not measured) from the same formula:
+# 7814 + 838 = ~8652 MiB - OVER the 8192 MiB card total by ~460 MiB. Q8_0
+# will NOT fit at the full 131072 ceiling on this 8GB card as configured.
+# Would need either a reduced context (unclear how much this saves - most of
+# the 838 MiB constant is compute buffers/drafter, not KV cache, given the
+# sliding-window architecture, so shrinking -c may not recover much) or
+# --override-tensor to push a few FFN layers to CPU RAM (the lever already
+# used for Q4_K_M in older start-local-llama.sh generations). Untested
+# either way - would need a live run to confirm.
+#
+# Q6_K (6747 MiB file) is the extrapolated middle ground: 6747 + 838 = ~7585
+# MiB, leaving only ~600 MiB headroom on this 8GB card - fits, but well
+# under the ~2000 MiB safety margin Q4_K_M/Q5_K_M leave. Untested.
+
 # UNVERIFIED: exact GGUF tensor name for Per-Layer Embeddings. On Gemma 3n it
 # was per_layer_token_embd.weight; do not assume Gemma 4 matches without
 # checking `gguf_dump.py` or llama-server's own startup tensor listing against
