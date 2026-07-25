@@ -47,6 +47,20 @@ DESKTOP_DIR="${DESKTOP_DIR:-$HOME/Desktop}"
 # user had set up themselves for unrelated reasons.
 LINGER_PRE_INSTALL_STATE="${LINGER_PRE_INSTALL_STATE:-}"
 
+# Model reasoning/"thinking" mode: off by default. Measured live (2026-07-25,
+# RTX 3080 8GB, Nemotron 3 Nano 30B-A3B, a grep+read_file tool-calling
+# prompt) that for Claude Code's mechanical tool-calling workload, thinking
+# does not improve tool-call correctness but costs ~13x the tokens and ~11x
+# the latency for an equivalent result - and at a realistic per-turn token
+# budget (500 tokens), the model burned the entire budget on reasoning and
+# never emitted the tool call at all (finish_reason: length). Not a
+# CONF_FILE-editable-only setting on purpose - set via install.sh's
+# --enable-thinking / --disable-thinking flags, not the interactive prompt
+# flow, so flipping it is a deliberate command-line choice each time rather
+# than something that can get left on by an "Enter to keep previous answer"
+# re-run. See README.md "Thinking mode".
+ENABLE_THINKING="${ENABLE_THINKING:-no}"
+
 log() {
   if [ "$INSTALL_VERBOSE" = "yes" ]; then
     if [ "$INSTALL_LOG_DEST" = "disk" ]; then
@@ -102,6 +116,7 @@ PROXY_LOG_FILE="$PROXY_LOG_FILE"
 INSTALL_DESKTOP_SHORTCUT="$INSTALL_DESKTOP_SHORTCUT"
 DESKTOP_DIR="$DESKTOP_DIR"
 LINGER_PRE_INSTALL_STATE="$LINGER_PRE_INSTALL_STATE"
+ENABLE_THINKING="$ENABLE_THINKING"
 EOF
 }
 

@@ -50,7 +50,20 @@ Gemma 4 E2B/E4B are multimodal (text, image, audio) upstream. This project only 
 
 ### Thinking mode
 
-Gemma 4's "thinking mode" is triggered by putting a `<|think|>` token at the start of the system prompt, not a CLI flag - this project never injects it. For a mechanical Claude Code tool-calling workload, thinking output is pure added latency and token cost with no benefit, so it's deliberately left off. Add the token to a system prompt yourself if you specifically want it.
+All three model families here support a reasoning/"thinking" mode, toggled via `--chat-template-kwargs '{"enable_thinking":<true|false>}'` on `llama-server` - not a `<|think|>` system-prompt token as an earlier version of this section claimed (that claim didn't hold up against a live test of the actual unsloth GGUF this project downloads: it emits `reasoning_content` by default with zero flags passed).
+
+**Off by default, on purpose - not a VRAM/context limitation.** Every downloaded model (Gemma 4 E4B, Nemotron 3 Nano 4B, Nemotron 3 Nano 30B-A3B) has comfortable VRAM headroom (1.7-2.6 GB) to run with thinking on at its full recommended context. The reason it's off anyway is a live tool-calling test against Nemotron 3 Nano 30B-A3B (2026-07-25, RTX 3080 8GB, a grep+read_file tool-call prompt):
+
+| | thinking ON (default template) | thinking OFF |
+| --- | --- | --- |
+| Tool call at a realistic 500-token budget | **Never emitted** - burned the whole budget on `reasoning_content`, `finish_reason: "length"` | Correct tool call, 50 completion tokens, 1.3s |
+| Tool call with budget raised to 2000 tokens | Eventually correct-ish, but 643 completion tokens and 14.6s | (same as above) |
+
+Reasoning cost roughly 13x the tokens and 11x the latency for a tool call that was no more correct than the non-reasoning one - and at token budgets closer to what a real Claude Code sub-agent call uses, it can consume the entire budget and never produce a tool call at all. That's the opposite of what you want for a mechanical, tool-calling-heavy workload, so `ENABLE_THINKING` defaults to `no`.
+
+Turn it on with `install.sh --enable-thinking` (turn it back off with `--disable-thinking`) - deliberately a command-line flag, not part of the interactive prompt flow, so it can't get left on by an "Enter to keep previous answer" re-run. `model-profiles/gemma4-e4b.sh`, `nemotron3-nano-4b.sh`, and `nemotron3-nano-30b.sh` each declare `THINKING_KWARG_KEY="enable_thinking"` (a capability marker - which chat-template kwarg this model's template uses), and `install.d/80-launcher.sh` emits `--chat-template-kwargs` with that key set to whatever `ENABLE_THINKING` resolved to, explicitly true or false either way, so the deployed script never depends on a GGUF's undocumented baked-in default.
+
+`qwen35-9b.sh` doesn't set `THINKING_KWARG_KEY` - Qwen3.5-9B already defaults to reasoning off per Qwen/unsloth's own docs, so there's nothing to force (not independently live-tested here, no Qwen model is currently downloaded in this install).
 
 ### TurboQuant: considered, not adopted
 

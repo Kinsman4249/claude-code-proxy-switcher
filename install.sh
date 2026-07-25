@@ -50,6 +50,33 @@ INSTALL_D="$SCRIPT_DIR/install.d"
 mkdir -p "$(dirname "$CONF_FILE")"
 [ -f "$CONF_FILE" ] && source "$CONF_FILE"
 
+# --enable-thinking / --disable-thinking: deliberately a command-line flag,
+# not an interactive prompt (see ENABLE_THINKING's comment in
+# install.d/00-config.sh for why it's off by default). Applied after
+# CONF_FILE is loaded so it overrides a saved answer for this run, and
+# save_config() below persists whichever way this run left it.
+for arg in "$@"; do
+  case "$arg" in
+    --enable-thinking) ENABLE_THINKING="yes" ;;
+    --disable-thinking) ENABLE_THINKING="no" ;;
+    -h|--help)
+      echo "Usage: install.sh [--enable-thinking|--disable-thinking]"
+      echo
+      echo "  --enable-thinking   Turn on model reasoning/\"thinking\" mode. Off by"
+      echo "                      default: measured live against Nemotron 3 Nano"
+      echo "                      30B-A3B on a tool-calling prompt, thinking cost"
+      echo "                      ~13x the tokens and ~11x the latency for no gain"
+      echo "                      in tool-call correctness, and at a realistic"
+      echo "                      500-token budget it burned the whole budget on"
+      echo "                      reasoning and never emitted the tool call at all."
+      echo "                      See README.md \"Thinking mode\"."
+      echo "  --disable-thinking  Explicitly turn it back off (undoes a previous"
+      echo "                      --enable-thinking saved to $CONF_FILE)."
+      exit 0
+      ;;
+  esac
+done
+
 for step_file in "$INSTALL_D"/*.sh; do
   # shellcheck source=/dev/null
   source "$step_file"

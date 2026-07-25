@@ -38,6 +38,24 @@ build_start_script() {
   [ -n "${DEFAULT_TOP_P:-}" ] && SAMPLING_ARGS="$SAMPLING_ARGS --top-p $DEFAULT_TOP_P"
   [ -n "${DEFAULT_TOP_K:-}" ] && SAMPLING_ARGS="$SAMPLING_ARGS --top-k $DEFAULT_TOP_K"
 
+  # THINKING_KWARG_KEY (profile field, empty unless a profile sets it): the
+  # chat-template-kwargs key this model's template uses to toggle reasoning
+  # (every profile that sets it so far uses "enable_thinking" - see the
+  # CONFIRMED note next to THINKING_KWARG_KEY in whichever model-profiles/
+  # *.sh set it). Always emitted explicitly - true or false - rather than
+  # leaving it to the GGUF's baked-in chat-template default, in either
+  # direction: ENABLE_THINKING (install.sh --enable-thinking/
+  # --disable-thinking, off by default - see install.d/00-config.sh) decides
+  # which.
+  CTK_ARGS=""
+  if [ -n "${THINKING_KWARG_KEY:-}" ]; then
+    if [ "${ENABLE_THINKING:-no}" = "yes" ]; then
+      CTK_ARGS=" --chat-template-kwargs '{\"${THINKING_KWARG_KEY}\":true}'"
+    else
+      CTK_ARGS=" --chat-template-kwargs '{\"${THINKING_KWARG_KEY}\":false}'"
+    fi
+  fi
+
   # ARCH_NOTES comes from the model profile (model-profiles/*.sh) as one long
   # line; wrap it here to match the comment column the rest of this header
   # uses, first line after "offload all layers to GPU (", continuation lines
@@ -108,7 +126,7 @@ build_start_script() {
   # continuation chain silently breaks the command in two (the shell treats
   # the blank line as ending it), so nothing optional may sit on its own
   # line here even when guarded by [ -n ... ].
-  EXTRA_FLAGS="$OT_ARGS$KVOFFLOAD_ARGS$PLE_OFFLOAD_ARGS$SPEC_ARGS$SAMPLING_ARGS"
+  EXTRA_FLAGS="$OT_ARGS$KVOFFLOAD_ARGS$PLE_OFFLOAD_ARGS$SPEC_ARGS$SAMPLING_ARGS$CTK_ARGS"
 
   # --fit off (manual KV sizing, Qwen): the context/VRAM budget above was
   # computed by hand, and --fit on would fight that manual -ngl/--override-
@@ -156,6 +174,7 @@ $([ -n "$OT_ARGS" ] && echo "# --override-tensor          last $LLAMA_CPU_FFN_LA
 $([ -n "$KVOFFLOAD_ARGS" ] && echo "# --no-kv-offload            whole KV cache kept in system RAM instead of VRAM")
 $([ -n "$PLE_OFFLOAD_ARGS" ] && echo "# --override-tensor          Per-Layer Embedding tables kept in system RAM (lookup-only, cheap to offload)")
 $([ -n "$SAMPLING_ARGS" ] && echo "# --temp/--top-p/--top-k     sampling defaults from the $PROFILE_NAME model card")
+$([ -n "$CTK_ARGS" ] && echo "# --chat-template-kwargs     reasoning explicitly forced $([ "${ENABLE_THINKING:-no}" = "yes" ] && echo "ON (--enable-thinking passed to install.sh)" || echo "OFF (default - see README.md 'Thinking mode')")")
 # LOG_FILE            every run's output also goes here (overwritten each
 #                      start, not appended) so a crash is diagnosable even if
 #                      it happened in a terminal window that already closed.
