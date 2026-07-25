@@ -88,9 +88,21 @@ RECOMMENDED_CTX_8GB=131072
 # used for Q4_K_M in older start-local-llama.sh generations). Untested
 # either way - would need a live run to confirm.
 #
-# Q6_K (6747 MiB file) is the extrapolated middle ground: 6747 + 838 = ~7585
-# MiB, leaving only ~600 MiB headroom on this 8GB card - fits, but well
-# under the ~2000 MiB safety margin Q4_K_M/Q5_K_M leave. Untested.
+# Q6_K (6747 MiB file) CONFIRMED 2026-07-25, same RTX 3080 8GB card, same
+# session/flags as the Q4_K_M/Q5_K_M pair above (-c 131072, --fit on, -b 512,
+# q8_0 KV, MTP drafter, no --override-tensor): 6578 MiB VRAM (nvidia-smi
+# per-process reading), fitting at the full 131072 ctx ceiling with 1614 MiB
+# headroom on this 8GB card. This comes in BELOW the file-size+838MiB formula
+# used above (6747 + 838 = ~7585 predicted) - the measured figure is even
+# smaller than the file's own size on disk, so the "weights load straight
+# into VRAM, plus a flat ~838 MiB constant" model that fit Q4_K_M/Q5_K_M
+# doesn't hold exactly for Q6_K (possibly a different KV/compute-buffer
+# split at this quant, not investigated further - not worth chasing given
+# the actual number is comfortably better than predicted, not worse). Smoke
+# test (a real chat completion through the OpenAI-compatible endpoint)
+# returned coherent output. Given this beats the earlier "only ~600 MiB
+# headroom" extrapolation by a wide margin, Q6_K is a fine middle-ground
+# pick between Q5_K_M's speed and Q8_0's quality on an 8GB card.
 
 # UNVERIFIED: exact GGUF tensor name for Per-Layer Embeddings. On Gemma 3n it
 # was per_layer_token_embd.weight; do not assume Gemma 4 matches without
@@ -124,12 +136,13 @@ THINKING_KWARG_KEY="enable_thinking"
 
 # Sizes confirmed from unsloth/gemma-4-E4B-it-GGUF's own file listing
 # (bytes -> MiB, rounded up): Q4_K_M 4977171584, Q5_K_M 5481798784,
-# Q8_0 8192953472. KV_MODEL=probe means these don't feed the context
-# formula directly (that's Qwen-only, see prompt_vram_and_context in
+# Q6_K 7074929792, Q8_0 8192953472. KV_MODEL=probe means these don't feed the
+# context formula directly (that's Qwen-only, see prompt_vram_and_context in
 # install.d/20-prompts-model.sh) but they're accurate for display now.
 QUANT_MENU=(
   "Q4_K_M|4747|confirmed from the repo's file listing"
   "Q5_K_M|5228|confirmed from the repo's file listing"
+  "Q6_K|6747|confirmed from the repo's file listing - live-tested 2026-07-25, 6578 MiB VRAM at full 131072 ctx, see the QUANT COMPARISON note above"
   "Q8_0|7814|confirmed from the repo's file listing"
 )
 QUANT_MENU_INTRO="Gemma 4 E4B from \$HF_REPO (recommended Gemma pick for tool

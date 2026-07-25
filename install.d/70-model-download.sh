@@ -72,7 +72,19 @@ ensure_hf_auth() {
 # multimodal-projector ("mmproj-*") files explicitly, since those are real
 # GGUF files that would otherwise satisfy the same *.gguf glob.
 download_main_model() {
-  MODEL_DIR="\$HOME/models/$MODEL_PROFILE"
+  # $HOME here is the host's, expanded immediately (not deferred with a
+  # backslash escape) - distrobox mounts the host home into the container at
+  # the same path, so this resolves correctly inside it too (same reasoning
+  # as LLAMA_SERVER_BIN in install.d/60-llama-server-build.sh:94-96). A
+  # deferred/escaped "\$HOME" broke here: every use of $MODEL_DIR below is
+  # wrapped in single quotes (mkdir -p '$MODEL_DIR', find '$MODEL_DIR', etc.)
+  # for path-safety, but single quotes at the FINAL parse level (inside the
+  # container's `bash -lc`) suppress expansion entirely, including of $HOME -
+  # so the literal 6 characters "$HOME" got passed straight to mkdir/find as
+  # a path component instead of expanding, producing a directory literally
+  # named "$HOME" in the host's cwd (confirmed by reproducing this exact
+  # command live - see handoff.md's 2026-07-25 bug note for the incident).
+  MODEL_DIR="$HOME/models/$MODEL_PROFILE"
   MAIN_MODEL_FIND="find '$MODEL_DIR' -maxdepth 1 -iname '*$GGUF_PATTERN*.gguf' \
     -not -iname 'mtp-*' -not -iname '*assistant*' -not -iname 'mmproj-*' 2>/dev/null"
 
