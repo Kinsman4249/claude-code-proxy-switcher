@@ -47,8 +47,25 @@ build_start_script() {
   # direction: ENABLE_THINKING (install.sh --enable-thinking/
   # --disable-thinking, off by default - see install.d/00-config.sh) decides
   # which.
+  #
+  # CONFIRMED by reading common/arg.cpp on this project's 2026-07-23 llama.cpp
+  # checkout: "enable_thinking" via --chat-template-kwargs is deprecated
+  # ("Use --reasoning on / --reasoning off instead" warning, still functional
+  # but noisy) in favor of -rea/--reasoning [on|off|auto], which internally
+  # sets that same default_template_kwargs["enable_thinking"] key (plus
+  # params.enable_reasoning) without the warning. --reasoning only ever
+  # writes the literal "enable_thinking" key, so it's only a safe substitute
+  # when THINKING_KWARG_KEY is exactly that (true for every profile so far) -
+  # falls back to the old flag (deprecation warning and all, still correct)
+  # if a future profile ever uses a different key.
   CTK_ARGS=""
-  if [ -n "${THINKING_KWARG_KEY:-}" ]; then
+  if [ "${THINKING_KWARG_KEY:-}" = "enable_thinking" ]; then
+    if [ "${ENABLE_THINKING:-no}" = "yes" ]; then
+      CTK_ARGS=" --reasoning on"
+    else
+      CTK_ARGS=" --reasoning off"
+    fi
+  elif [ -n "${THINKING_KWARG_KEY:-}" ]; then
     if [ "${ENABLE_THINKING:-no}" = "yes" ]; then
       CTK_ARGS=" --chat-template-kwargs '{\"${THINKING_KWARG_KEY}\":true}'"
     else
@@ -174,7 +191,7 @@ $([ -n "$OT_ARGS" ] && echo "# --override-tensor          last $LLAMA_CPU_FFN_LA
 $([ -n "$KVOFFLOAD_ARGS" ] && echo "# --no-kv-offload            whole KV cache kept in system RAM instead of VRAM")
 $([ -n "$PLE_OFFLOAD_ARGS" ] && echo "# --override-tensor          Per-Layer Embedding tables kept in system RAM (lookup-only, cheap to offload)")
 $([ -n "$SAMPLING_ARGS" ] && echo "# --temp/--top-p/--top-k     sampling defaults from the $PROFILE_NAME model card")
-$([ -n "$CTK_ARGS" ] && echo "# --chat-template-kwargs     reasoning explicitly forced $([ "${ENABLE_THINKING:-no}" = "yes" ] && echo "ON (--enable-thinking passed to install.sh)" || echo "OFF (default - see README.md 'Thinking mode')")")
+$([ -n "$CTK_ARGS" ] && echo "# ${CTK_ARGS# }              reasoning explicitly forced $([ "${ENABLE_THINKING:-no}" = "yes" ] && echo "ON (--enable-thinking passed to install.sh)" || echo "OFF (default - see README.md 'Thinking mode')")")
 # LOG_FILE            every run's output also goes here (overwritten each
 #                      start, not appended) so a crash is diagnosable even if
 #                      it happened in a terminal window that already closed.
