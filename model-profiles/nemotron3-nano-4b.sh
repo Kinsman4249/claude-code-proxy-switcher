@@ -57,10 +57,38 @@ BYTES_PER_TOKEN=                                # unused when KV_MODEL=probe
 # needed) loads and serves real completions using 6975 MiB of 8192 MiB -
 # 1217 MiB headroom, comfortably more margin than the ~1700 MiB headroom
 # the 92416 figure below was originally accepted with. Raised to 131072 for
-# that reason - the real ceiling sits somewhere between 131072 (confirmed
-# working) and 262144 (confirmed OOM), not further narrowed down since
-# 131072 already meets the "match Haiku's context" goal this was tested for.
+# that reason. UPDATE 2026-07-25 (see the CONFIRMED note below this one): the
+# real ceiling for UD-Q8_K_XL, the quant this number was tested against, is
+# now precisely known - 195584 (binary-searched to +/-512 tokens against the
+# real OOM boundary), well above 131072. RECOMMENDED_CTX_8GB is kept at
+# 131072 anyway rather than raised to match: it was chosen to match Claude
+# Haiku's ~128K context, a goal unrelated to VRAM headroom, and 195584 would
+# leave only ~370 MiB of headroom on this card (see the quant-by-quant
+# figures below) versus 131072's larger margin - raising it is a deliberate
+# tradeoff call for whoever installs this, not something to default silently.
 RECOMMENDED_CTX_8GB=131072
+
+# CONFIRMED 2026-07-25 (separate session from the note above), same RTX 3080
+# 8GB card: swept every remaining quant in the menu below for its real ceiling
+# - each tried at this model's own metadata max (262144) first via a real
+# /completion request, and binary-searched (+/-512 token precision) down to
+# a real working ceiling whenever that OOM'd, nvidia-smi read immediately
+# after each successful load:
+#   UD-Q4_K_XL (2988 MiB file): 262144 ctx fits whole - 6815 MiB VRAM
+#   Q5_K_M     (3013 MiB file): 262144 ctx fits whole - 6839 MiB VRAM
+#   Q6_K       (3868 MiB file): 262144 ctx fits whole - 7573 MiB VRAM
+#   Q8_0       (4038 MiB file): 262144 ctx fits whole - 7741 MiB VRAM
+#   UD-Q6_K_XL (4348 MiB file): 262144 OOMs - real ceiling 244672, 7821 MiB
+#   UD-Q8_K_XL (5365 MiB file): 262144 OOMs - real ceiling 195584, 7823 MiB
+# (both binary-searched to +/-512 token precision against the actual OOM
+# boundary, not rounded to a convenient power-of-two guess)
+# Unlike the 30B-A3B sibling profile, VRAM here tracks file size almost
+# exactly monotonically (expected: this is the dense variant, no MoE experts
+# for --fit to place off-GPU independently of quant level - every tensor in
+# the file goes straight to VRAM at -ngl 99). The two largest quants
+# (UD-Q6_K_XL, UD-Q8_K_XL) are the only ones in the menu whose real ceiling
+# sits below the model's own 262144 max on this card; every quant at or
+# below Q8_0 in file size fits the model's own max whole.
 
 # Not a Per-Layer-Embeddings model - nothing to offload here.
 PLE_TENSOR_REGEX=""
@@ -116,19 +144,18 @@ THINKING_KWARG_KEY="enable_thinking"
 # All three comfortably fit at this context; UD-Q8_K_XL has the least
 # headroom of the three, which is why it was the one used to determine
 # RECOMMENDED_CTX_8GB above (the tightest-fitting case). Q5_K_M/Q6_K/Q8_0/
-# UD-Q4_K_XL weren't live-tested but sit between these measured points by
-# file size, so expect proportionally similar VRAM (see model-profiles/
-# gemma4-e4b.sh's quant-comparison note for why that extrapolation is
-# reasonable at fixed context/flags - llama.cpp loads quantized weights
-# straight into VRAM without dequantizing, so VRAM cost tracks file size
-# plus a roughly-constant KV-cache/compute-buffer overhead).
+# UD-Q4_K_XL were live-tested in a later session (see the CONFIRMED note
+# above RECOMMENDED_CTX_8GB) rather than left as an extrapolation - the
+# straight-line-by-file-size guess this comment used to make turned out
+# right in relative ordering but is no longer needed now that every quant
+# has a real measured number.
 QUANT_MENU=(
-  "Q4_K_M|2766|confirmed from the repo's file listing"
-  "UD-Q4_K_XL|2988|Unsloth dynamic quant, better quality at similar size"
-  "Q5_K_M|3013|confirmed from the repo's file listing"
-  "Q6_K|3868|confirmed from the repo's file listing, best quality/size tradeoff"
-  "Q8_0|4038|confirmed from the repo's file listing"
-  "UD-Q8_K_XL|5365|Unsloth dynamic quant, largest offered - still under 6 GB"
+  "Q4_K_M|2766|confirmed from the repo's file listing - live-tested at 92416 ctx, 4383 MiB"
+  "UD-Q4_K_XL|2988|Unsloth dynamic quant, better quality at similar size - live-tested, fits full 262144 ctx at 6815 MiB"
+  "Q5_K_M|3013|confirmed from the repo's file listing - live-tested, fits full 262144 ctx at 6839 MiB"
+  "Q6_K|3868|confirmed from the repo's file listing, best quality/size tradeoff - live-tested, fits full 262144 ctx at 7573 MiB"
+  "Q8_0|4038|confirmed from the repo's file listing - live-tested, fits full 262144 ctx at 7741 MiB"
+  "UD-Q8_K_XL|5365|Unsloth dynamic quant, largest offered - still under 6 GB - live-tested, real ceiling below the model's own 262144 max, see the CONFIRMED note above RECOMMENDED_CTX_8GB"
 )
 QUANT_MENU_INTRO="Nemotron 3 Nano 4B from \$HF_REPO. Every quant here comfortably
 fits an 8GB card - pick based on quality, not VRAM pressure."

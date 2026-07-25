@@ -75,6 +75,27 @@ NGL_MODE="fit"                                  # fixed | fit
 # reasoning as model-profiles/gemma4-e4b.sh's RECOMMENDED_CTX_8GB.
 RECOMMENDED_CTX_8GB=262144
 
+# CONFIRMED 2026-07-25 on the same RTX 3080 8GB card: swept the rest of the
+# quant menu below (Q4_K_S, UD-Q4_K_XL, Q5_K_S, Q6_K, Q8_0 - IQ4_XS was
+# already covered above), same flags (NGL_MODE=fit, -b 512, q8_0 KV cache),
+# each tried at this model's own metadata max (262144) first via a real
+# /completion request, nvidia-smi read immediately after a successful load:
+#   Q4_K_S     (21000 MiB file): 262144 ctx fits whole - 6485 MiB VRAM
+#   UD-Q4_K_XL (21776 MiB file): 262144 ctx fits whole - 6491 MiB VRAM
+#   Q5_K_S     (22844 MiB file): 262144 ctx fits whole - 6393 MiB VRAM
+#   Q6_K       (31956 MiB file): 262144 ctx fits whole - 6061 MiB VRAM
+#   Q8_0       (32030 MiB file): 262144 ctx fits whole - 6135 MiB VRAM
+# Every quant in the menu now confirmed to fit the model's own full context
+# ceiling with 1.7-2.1 GiB of headroom to spare, no binary search needed for
+# any of them (unlike the dense 4B sibling profile, where the two largest
+# quants do have a real ceiling below 262144). VRAM doesn't track file size
+# monotonically here (Q8_0's 32030 MiB file uses LESS VRAM than Q5_K_S's
+# 22844 MiB file) - consistent with the ARCHITECTURE note above: file size
+# differences between these quants are almost entirely in the 128 routed
+# MoE experts, which --fit distributes across GPU/CPU RAM independently of
+# quant level, so a bigger file doesn't straightforwardly mean more GPU
+# VRAM the way it does for the dense 4B profile.
+
 # Not a Per-Layer-Embeddings model - nothing to offload here.
 PLE_TENSOR_REGEX=""
 
@@ -129,12 +150,12 @@ THINKING_KWARG_KEY="enable_thinking"
 # this model - what matters for an 8GB card instead is how many of the MoE
 # expert tensors --fit (see ARCH_NOTES below) can leave on GPU.
 QUANT_MENU=(
-  "IQ4_XS|17327|confirmed from the repo's file listing, smallest non-UD quant"
-  "Q4_K_S|21000|confirmed from the repo's file listing"
-  "UD-Q4_K_XL|21776|Unsloth dynamic quant, better quality at similar size"
-  "Q5_K_S|22844|confirmed from the repo's file listing"
-  "Q6_K|31956|confirmed from the repo's file listing"
-  "Q8_0|32030|confirmed from the repo's file listing"
+  "IQ4_XS|17327|confirmed from the repo's file listing, smallest non-UD quant - live-tested, fits full 262144 ctx at 6391-6541 MiB"
+  "Q4_K_S|21000|confirmed from the repo's file listing - live-tested, fits full 262144 ctx at 6485 MiB"
+  "UD-Q4_K_XL|21776|Unsloth dynamic quant, better quality at similar size - live-tested, fits full 262144 ctx at 6491 MiB"
+  "Q5_K_S|22844|confirmed from the repo's file listing - live-tested, fits full 262144 ctx at 6393 MiB"
+  "Q6_K|31956|confirmed from the repo's file listing - live-tested, fits full 262144 ctx at 6061 MiB"
+  "Q8_0|32030|confirmed from the repo's file listing - live-tested, fits full 262144 ctx at 6135 MiB"
 )
 QUANT_MENU_INTRO="Nemotron 3 Nano 30B-A3B from \$HF_REPO. Unlike Qwen3.5-9B or
 Gemma 4, quant level barely changes the download size here (see the note in
