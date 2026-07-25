@@ -2,6 +2,10 @@
 
 This file tracks real changes to this repository. Entries are grouped into numbered rounds of work, with each individual change getting its own running number rather than restarting at 1 per round.
 
+### Model profile cleanup (round fifteen)
+
+37. Removed all model-profile shell scripts (`model-profiles/gemma4-e2b.sh`, `model-profiles/gemma4-e4b.sh`, `model-profiles/nemotron3-nano-30b.sh`, `model-profiles/nemotron3-nano-4b.sh`, `model-profiles/qwen35-9b.sh`) and the model-profiles directory entirely. The Gemma 4 profiles were never fully wired up (see round two, entries 8-10: they shipped with unverified placeholders and that limitation never got resolved), and consolidation to a single model path simplifies both the installation flow and the ongoing maintenance burden of supporting multiple model variants with different architectures and parameter layouts. Users upgrading to this version will see the model-selection prompt removed from `install.sh` and a streamlined install that builds and configures a single model directly.
+
 ### Initial local-mode proxy and switch (round one)
 
 1. Added `litellm_config.yaml`, a LiteLLM proxy config with no cloud model entries and no Anthropic API key anywhere. It maps `claude-haiku-4-5`, `claude-sonnet-5`, and `claude-opus-4-8`, the model names Claude Code's main session and sub-agents actually send, all to the same local Ollama backend. This exists because Anthropic's April 2026 policy change blocking subscription OAuth tokens in third-party proxies ruled out a cloud fallback that draws from a Pro/Max subscription instead of billed API usage. Rather than accept surprise direct billing on a fallback, the config has no cloud path at all: if Ollama isn't serving, requests fail cleanly with a connection error instead of silently charging anything.
