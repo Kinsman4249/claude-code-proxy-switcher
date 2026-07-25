@@ -14,9 +14,48 @@
 prompt_model_profile() {
   PROFILE_DIR="$SCRIPT_DIR/model-profiles"
   AVAILABLE_PROFILES="$(cd "$PROFILE_DIR" && ls -1 ./*.sh 2>/dev/null | sed -e 's|^\./||' -e 's|\.sh$||')"
+
+  # Numbered menu, same style as prompt_quant_choice() below - built fresh
+  # from AVAILABLE_PROFILES every run rather than a bash `select` loop, so it
+  # plugs into this project's usual ask()/CONF_FILE "Enter to keep your last
+  # answer" convention instead of select's own re-prompt-on-bad-input
+  # behavior. Each profile's own PROFILE_NAME (the human-readable label, e.g.
+  # "Nemotron 3 Nano 30B-A3B") is read straight out of its file with
+  # grep/sed rather than sourcing it - sourcing every profile just to list
+  # them would run whichever one happens to load last, overwriting the
+  # others' variables for no reason; only the one actually chosen gets
+  # sourced, same as before.
   echo
-  echo "Which model profile? Available: $(echo "$AVAILABLE_PROFILES" | tr '\n' ' ')"
-  ask MODEL_PROFILE "Model profile name"
+  echo "Which model profile?"
+  PICK_NUM=1
+  DEFAULT_PICK=""
+  PROFILE_LIST=()
+  while IFS= read -r PROFILE_STEM; do
+    [ -z "$PROFILE_STEM" ] && continue
+    PROFILE_LABEL="$(sed -n 's/^PROFILE_NAME="\(.*\)"$/\1/p' "$PROFILE_DIR/$PROFILE_STEM.sh" | head -n1)"
+    printf "  %d) %-20s %s\n" "$PICK_NUM" "$PROFILE_STEM" "$PROFILE_LABEL"
+    PROFILE_LIST+=("$PROFILE_STEM")
+    if [ "$PROFILE_STEM" = "$MODEL_PROFILE" ]; then
+      DEFAULT_PICK="$PICK_NUM"
+    fi
+    PICK_NUM=$((PICK_NUM + 1))
+  done <<< "$AVAILABLE_PROFILES"
+
+  MODEL_PROFILE_CHOICE="$DEFAULT_PICK"
+  ask MODEL_PROFILE_CHOICE "Pick a number"
+
+  if [ "$MODEL_PROFILE_CHOICE" -ge 1 ] 2>/dev/null && [ "$MODEL_PROFILE_CHOICE" -le "${#PROFILE_LIST[@]}" ] 2>/dev/null; then
+    MODEL_PROFILE="${PROFILE_LIST[$((MODEL_PROFILE_CHOICE - 1))]}"
+  elif [ -f "$PROFILE_DIR/$MODEL_PROFILE_CHOICE.sh" ]; then
+    # Not advertised above, but kept working: typing the exact filename stem
+    # directly still resolves, so a scripted/non-interactive re-run that
+    # already pipes in a profile name by that name doesn't break.
+    MODEL_PROFILE="$MODEL_PROFILE_CHOICE"
+  else
+    echo "Didn't recognize '$MODEL_PROFILE_CHOICE'. Available profiles:" >&2
+    printf '  %s\n' "${PROFILE_LIST[@]}" >&2
+    exit 1
+  fi
 
   PROFILE_FILE="$PROFILE_DIR/$MODEL_PROFILE.sh"
   if [ ! -f "$PROFILE_FILE" ]; then

@@ -4,6 +4,65 @@
 # drafter model too) into the container. Sets MODEL_DIR, LLAMA_MODEL_PATH,
 # and LLAMA_DRAFT_PATH as side effects - 80-launcher.sh reads all three.
 
+# --- Hugging Face authentication: optional but strongly recommended ---
+# Anonymous (unauthenticated) requests share a much lower rate limit than
+# authenticated ones. This isn't theoretical - confirmed firsthand while
+# testing the Nemotron 3 Nano profiles below: an 18GB anonymous download's
+# transfer concurrency got throttled down to a crawl (effectively stalled
+# for minutes at a time) after sustained use in one session, and picked
+# back up immediately once the container was authenticated. A free,
+# read-only token avoids that entirely.
+#
+# This function never sees or stores the token itself - it always delegates
+# to `hf auth login`'s own interactive flow, which prompts for the token
+# with input hidden (not echoed to the terminal or shell history) and
+# writes it to a permission-restricted file (chmod 600) inside the
+# container - the same official mechanism the `hf` CLI itself always uses.
+# Deliberately NOT added to save_config()/$CONF_FILE: that file is plaintext
+# with no permission restriction (see PROXY_MASTER_KEY in
+# install.d/00-config.sh for an existing example of what it already stores
+# in the clear) - a token deserves better than that, so this project never
+# lets it touch that file, or any bash variable of ours, at all.
+ensure_hf_auth() {
+  # A completely fresh container may not have the `hf` CLI yet - the
+  # regular download path below only installs it once a download actually
+  # starts, but this function can run before that, so it needs its own
+  # install-if-missing check rather than assuming `hf` is already on PATH.
+  distrobox enter "$CONTAINER_NAME" -- bash -lc '
+    command -v hf >/dev/null 2>&1 || {
+      python3 -m pip --version >/dev/null 2>&1 || sudo dnf install -y python3-pip
+      sudo python3 -m pip install -U huggingface_hub --break-system-packages -q
+    }
+  '
+
+  local HF_WHOAMI
+  HF_WHOAMI="$(distrobox enter "$CONTAINER_NAME" -- bash -lc 'hf auth whoami 2>/dev/null')"
+  if [ -n "$HF_WHOAMI" ]; then
+    log "Already authenticated to Hugging Face inside $CONTAINER_NAME ($HF_WHOAMI)"
+    return
+  fi
+
+  echo
+  echo "Hugging Face downloads work fine without an account, but anonymous"
+  echo "requests share a much lower rate limit - on a large model this can mean"
+  echo "a download's transfer speed gets throttled down until it looks stalled"
+  echo "for minutes at a time. A free, read-only access token removes that limit."
+  echo
+  echo "Generate one (the 'read' role is enough, no need for 'write') at:"
+  echo "  https://huggingface.co/settings/tokens"
+  local SETUP_HF_AUTH="yes"
+  ask SETUP_HF_AUTH "Set up Hugging Face authentication now? (yes/no)"
+  if [ "$SETUP_HF_AUTH" != "yes" ]; then
+    echo "Skipping - downloads will use the slower anonymous rate limit."
+    return
+  fi
+
+  echo "Paste your token at the prompt below (input is hidden). This runs hf's"
+  echo "own login flow directly inside the container - this script never sees"
+  echo "or stores the token itself."
+  distrobox enter "$CONTAINER_NAME" -- hf auth login
+}
+
 # --- Step 9: download the model, inside the container ---
 # Each profile gets its own directory (~/models/$MODEL_PROFILE/) rather than
 # a shared search across the whole home directory - with more than one model
@@ -19,6 +78,7 @@ download_main_model() {
 
   LLAMA_MODEL_PATH=""
   if [ "$DOWNLOAD_MODEL_NOW" = "yes" ]; then
+    ensure_hf_auth
     echo "Checking whether a *$GGUF_PATTERN*.gguf file is already downloaded inside $CONTAINER_NAME..."
     local MATCHES MATCH_COUNT_MODEL
     MATCHES="$(distrobox enter "$CONTAINER_NAME" -- bash -lc "mkdir -p '$MODEL_DIR'; $MAIN_MODEL_FIND")"

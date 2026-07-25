@@ -115,6 +115,16 @@ After toggling, reload the VS Code/VSCodium window (`Ctrl+Shift+P` > "Reload Win
 
 If you installed the desktop icon, double-clicking it does the same thing without a terminal: it checks the current state, flips it, and confirms the new state with a desktop notification - including a critical notification instead of silent failure if it tried to turn on but `llama-server` wasn't reachable.
 
+## Using this with other VS Code AI extensions
+
+Nothing above is actually Claude-Code-specific under the hood - `litellm_config.yaml` exposes a plain OpenAI-compatible endpoint at `http://localhost:$PROXY_PORT/v1` (port 4000 by default), authenticated with `Authorization: Bearer $PROXY_MASTER_KEY` (`sk-local-dev-key` by default - both saved in `~/.config/claude-local-setup.conf`), and a wildcard `model_name: "*"` entry that routes any model name a client sends to the same local backend. `claude-local-toggle.sh` exists only to work around Claude Code's own OAuth-vs-proxy conflict (see above); any other OpenAI-compatible client can just point at that URL directly, no toggle needed.
+
+[Roo Code](https://docs.roocode.com/providers/openai-compatible) is one such client. In its settings, add a new API configuration profile: Provider "OpenAI Compatible", Base URL `http://localhost:4000/v1` (or your `$PROXY_PORT`), API Key your `$PROXY_MASTER_KEY`, Model any string you like (e.g. `local-llm` - the wildcard route ignores it). Roo Code keeps this as one of several named profiles you switch between from its own dropdown, so this is a one-time setup, not something you redo per session.
+
+That configuration is also stable across model changes: the port and key come from `~/.config/claude-local-setup.conf`, not from whichever `model-profiles/*.sh` is active, so re-running `install.sh` and picking a different numbered profile never requires touching Roo Code's settings again - only `install.sh`'s own model-download step changes. (This is the same one-stable-endpoint-many-models pattern tools like [Continue](https://github.com/continuedev/continue) use for the same reason.)
+
+Git operations (commit, push, tags) aren't a proxy concern at all - Roo Code runs against your normal host workspace and uses whatever git identity/credentials are already configured there, same as any other tool. What controls whether it can run `git push`/`git tag` without a manual click each time is Roo Code's own auto-approve setting for executing shell commands, not anything in this repo.
+
 ## Starting and stopping the model itself
 
 The proxy running is not the same as the model being loaded. Nothing loads automatically at boot:
