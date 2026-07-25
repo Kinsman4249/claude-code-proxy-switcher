@@ -146,6 +146,24 @@ That configuration is also stable across model changes: the port and key come fr
 
 Git operations (commit, push, tags) aren't a proxy concern at all - Roo Code runs against your normal host workspace and uses whatever git identity/credentials are already configured there, same as any other tool. What controls whether it can run `git push`/`git tag` without a manual click each time is Roo Code's own auto-approve setting for executing shell commands, not anything in this repo.
 
+**Use the "OpenAI Compatible" provider type, not "LiteLLM"** if Roo Code offers both - "LiteLLM" mode calls LiteLLM's own management API (e.g. `/v1/model/group/info`) to populate its model dropdown, a different endpoint than the plain `/v1/models` OpenAI-Compatible mode uses, and that management endpoint can 404 depending on your LiteLLM version even when the proxy itself is healthy and reachable.
+
+### Recommended client-side model settings per profile
+
+Roo Code's "OpenAI Compatible" provider asks you to describe the model's capabilities yourself (context window, image support, etc.) since it can't query an arbitrary OpenAI-compatible backend for them. These fields don't affect `llama-server` itself - they just tell Roo Code (or another client) what to expect, so setting them wrong doesn't break inference, but it can cause premature truncation (window set too low) or a client sending image content the model can't use (image support set true on a text-only model).
+
+Values below come straight from the matching `model-profiles/*.sh` `RECOMMENDED_CTX_8GB` (all measured/confirmed at 8GB VRAM, see that file's comments for the live test this number is from). "Not yet tested" means this project hasn't run that profile end-to-end yet (see "Known limitations") - don't trust a number that isn't listed until it's been updated here.
+
+| Profile | Context Window Size | Image Support | Thinking default | Notes |
+| --- | --- | --- | --- | --- |
+| Nemotron 3 Nano 30B-A3B | `262144` | unchecked | off (`--disable-thinking`, the project default) | Text-only. Confirmed live 2026-07-25 on an RTX 3080 8GB - see `model-profiles/nemotron3-nano-30b.sh`. Thinking ON burned an entire 500-token budget on `reasoning_content` and never emitted a tool call at all; leave thinking off for Claude Code's tool-calling workload. |
+| Nemotron 3 Nano 4B | `131072` | unchecked | off (`--disable-thinking`, the project default) | Text-only. Confirmed live on an RTX 3080 8GB - see `model-profiles/nemotron3-nano-4b.sh`. |
+| Gemma 4 E4B | `131072` | leave unchecked anyway | off (project never sends the `<|think|>` trigger) | Model is multimodal upstream (text/image/audio), but this project only ever talks to it over a text-only endpoint (see "Multimodal weights" above) - `install.sh` never passes `--mmproj`, so there's no working image path even though the model card supports one. Not yet live-tested end-to-end (see "Known limitations") - treat the context number as the profile's stated target, not a confirmed measurement. |
+| Gemma 4 E2B | not yet tested | leave unchecked anyway | off | Several profile values are UNVERIFIED placeholders (see "Choosing a model") - don't configure a client against this profile yet. |
+| Qwen3.5-9B-MTP | not yet tested | unchecked | n/a (reasoning off by default per Qwen/unsloth's docs, nothing to toggle) | No `RECOMMENDED_CTX_8GB` recorded in the profile yet. |
+
+Leave **Enable R1 model parameters** unchecked for every profile above (that's for QwQ/R1-style models that 400 without it, not applicable here), **Enable Reasoning Effort** unchecked (thinking mode here is controlled by `install.sh --enable-thinking`/`--disable-thinking`, not a per-request client field - see "Thinking mode" above), and **Input/Output Price** at `0` (it's local, nothing is billed).
+
 ## Starting and stopping the model itself
 
 The proxy running is not the same as the model being loaded. Nothing loads automatically at boot:
