@@ -36,13 +36,30 @@ N_LAYERS=42
 KV_MODEL="probe"                                # manual | probe
 BYTES_PER_TOKEN=                                # unused when KV_MODEL=probe
 
-# UNVERIFIED: no live 8GB-card measurement yet (see model-profiles/
-# nemotron3-nano-30b.sh for the same caveat, and the same "no invented
-# facts" reasoning). Given every quant here is well under 6 GB, this model
-# is expected to comfortably fit at a very large context ceiling on an 8GB
-# card - but "expected" isn't "confirmed", so this is left blank rather than
-# guessing a number.
-RECOMMENDED_CTX_8GB=
+# CONFIRMED 2026-07-25 on a live RTX 3080 8GB (8192 MiB) card: this model's
+# own gguf metadata max context is 262144, but DON'T assume that's a safe
+# default the way Gemma 4 E4B's own max turned out to be (see
+# model-profiles/gemma4-e4b.sh) - it isn't. Learned the hard way: an explicit
+# `-c 262144` OOM'd immediately (compute-buffer allocation failure), because
+# --fit only auto-sizes an argument that's left COMPLETELY UNSET - the same
+# "n_gpu_layers already set by user ... abort" mechanism documented in
+# model-profiles/nemotron3-nano-30b.sh's NGL_MODE comment turns out to apply
+# to `-c`/n_ctx too (confirmed by reading llama.cpp's common/fit.cpp: an
+# explicit n_ctx hits its own "context size set by user ... -> no change"
+# early-return, separate from but structurally identical to the n_gpu_layers
+# guard). Passing a "ceiling" value doesn't work the way this project's own
+# prompt text (prompt_vram_and_context in install.d/20-prompts-model.sh)
+# describes for probe-model profiles - an explicit -c is always a fixed
+# value, never a ceiling --fit is free to shrink below.
+#
+# The value below was determined the correct way for a probe/fit profile:
+# started llama-server with BOTH -ngl and -c left unset (--fit on) against
+# this profile's largest quant (UD-Q8_K_XL, the tightest fit of the three
+# tested), read the real n_ctx_slot it picked from the server's own startup
+# log, then re-confirmed that exact number reproduces identically with
+# explicit -ngl 99 -c 92416 --fit off (same VRAM, same behavior - fit's
+# choice wasn't a fluke of that one run).
+RECOMMENDED_CTX_8GB=92416
 
 # Not a Per-Layer-Embeddings model - nothing to offload here.
 PLE_TENSOR_REGEX=""
@@ -61,6 +78,25 @@ DEFAULT_TOP_K="0"
 # picking the biggest one that still leaves headroom for a large context is
 # a reasonable default, unlike the 30B-A3B model where quant barely affects
 # download size at all.
+#
+# QUANT COMPARISON, same RTX 3080 8GB card, 2026-07-25, same session so
+# directly comparable: all three tested at the RECOMMENDED_CTX_8GB value
+# above (92416), -b 512, q8_0 KV cache, --fit off (explicit -ngl 99 -c
+# 92416), real completions confirmed working (not just a health check) via
+# a direct /completion request to each, nvidia-smi read immediately after
+# each load:
+#   Q4_K_M     (2766 MiB file): 4383 MiB VRAM - 3809 MiB headroom
+#   UD-Q6_K_XL (4348 MiB file): 5817 MiB VRAM - 2375 MiB headroom
+#   UD-Q8_K_XL (5365 MiB file): 6467 MiB VRAM - 1725 MiB headroom
+# All three comfortably fit at this context; UD-Q8_K_XL has the least
+# headroom of the three, which is why it was the one used to determine
+# RECOMMENDED_CTX_8GB above (the tightest-fitting case). Q5_K_M/Q6_K/Q8_0/
+# UD-Q4_K_XL weren't live-tested but sit between these measured points by
+# file size, so expect proportionally similar VRAM (see model-profiles/
+# gemma4-e4b.sh's quant-comparison note for why that extrapolation is
+# reasonable at fixed context/flags - llama.cpp loads quantized weights
+# straight into VRAM without dequantizing, so VRAM cost tracks file size
+# plus a roughly-constant KV-cache/compute-buffer overhead).
 QUANT_MENU=(
   "Q4_K_M|2766|confirmed from the repo's file listing"
   "UD-Q4_K_XL|2988|Unsloth dynamic quant, better quality at similar size"

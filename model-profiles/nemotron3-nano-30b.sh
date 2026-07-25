@@ -57,14 +57,23 @@ BYTES_PER_TOKEN=                                # unused when KV_MODEL=probe
 # get_memory_for_layers()/global_surplus_cpu_moe in common/fit.cpp.
 NGL_MODE="fit"                                  # fixed | fit
 
-# UNVERIFIED: no live 8GB-card measurement yet for this profile (see todo.md
-# history - this profile was added specifically to get that measurement).
-# Left blank so prompt_vram_and_context in install.d/20-prompts-model.sh
-# falls through to asking for a ceiling directly, rather than asserting a
-# number nobody has confirmed. Fill in once a live run confirms a number,
-# per this project's "no invented facts" rule - see model-profiles/
-# gemma4-e4b.sh's RECOMMENDED_CTX_8GB for the format once that happens.
-RECOMMENDED_CTX_8GB=
+# CONFIRMED 2026-07-25 on a live RTX 3080 8GB (8192 MiB) card, this
+# profile's IQ4_XS quant, NGL_MODE=fit (no -ngl), -b 512, q8_0 KV cache,
+# --fit on: this model's own gguf metadata max context (262144, see the
+# architecture note at the top of this file) fits and serves real
+# completions using only ~6391-6541 MiB VRAM - 1650-1800 MiB left over.
+# Tested a full ladder (4096 - the --fit-ctx floor when -c is also left
+# unset entirely - then 32768, 131072, and finally the full 262144) with
+# real /completion requests confirmed working at each step: VRAM barely
+# moved across that entire range (6353 -> 6541 -> 6391 MiB, differences
+# within noise). This isn't a coincidence - only 6 of this model's 52
+# layers are real attention (see ARCHITECTURE above); the other 46 are
+# Mamba-2 (fixed-size recurrent state, does not grow with context) or MoE
+# (context-independent). Unlike model-profiles/nemotron3-nano-4b.sh's
+# RECOMMENDED_CTX_8GB, no tighter number was needed here - the model's own
+# ceiling already fits comfortably, so that's what's recommended, same
+# reasoning as model-profiles/gemma4-e4b.sh's RECOMMENDED_CTX_8GB.
+RECOMMENDED_CTX_8GB=262144
 
 # Not a Per-Layer-Embeddings model - nothing to offload here.
 PLE_TENSOR_REGEX=""
