@@ -1,6 +1,6 @@
 # claude-code-proxy-switcher
 
-An on/off switch for routing Claude Code through a local model instead of your Anthropic Pro/Max subscription, with no API key anywhere and no cloud fallback. When it's off, Claude Code behaves exactly as if this project didn't exist, normal subscription auth, Sonnet and Opus available. When it's on, every model Claude Code might call, main session or sub-agent, routes to a local model (Qwen3.5-9B or Gemma 4, your choice - see "Choosing a model" below) running under llama-server (llama.cpp's own server), meant for small, cheap tasks where you don't want to spend Pro usage at all.
+An on/off switch for routing Claude Code through a local model instead of your Anthropic Pro/Max subscription, with no API key anywhere and no cloud fallback. When it's off, Claude Code behaves exactly as if this project didn't exist, normal subscription auth, Sonnet and Opus available. When it's on, every model Claude Code might call, main session or sub-agent, routes to a local model (Qwen3.5-9B, Gemma 4, or Nemotron 3 Nano, your choice - see "Choosing a model" below) running under llama-server (llama.cpp's own server), meant for small, cheap tasks where you don't want to spend Pro usage at all.
 
 ## Why this exists
 
@@ -18,23 +18,23 @@ It does not try to be a hybrid router that transparently falls back to cloud whe
 
 ## Choosing a model
 
-`install.sh` asks for a "model profile" - see `model-profiles/*.sh` - which sets every model-specific default below it (repo, quant sizes, layer count, KV-cache sizing behaviour, speculative-decoding wiring). Three are available:
+`install.sh` asks for a "model profile" - see `model-profiles/*.sh` - which sets every model-specific default below it (repo, quant sizes, layer count, KV-cache sizing behaviour, speculative-decoding wiring). Five are available:
 
-| | Qwen3.5-9B-MTP | Gemma 4 E2B | Gemma 4 E4B |
-| --- | --- | --- |
-| Effective params | 9B | 2.3B | 4.5B |
-| Params incl. embeddings | 9B | 5.1B | 8B |
-| Layers | 32 | 35 | 42 |
-| Max context | - | 128K | 128K |
-| Tau2 tool-use average | - | 24.5% | 42.2% |
-| LiveCodeBench v6 | - | 44.0% | 52.0% |
-| Speculative decoding | self-contained MTP head | separate drafter (UNVERIFIED filenames) | separate drafter (UNVERIFIED filenames) |
+| | Qwen3.5-9B-MTP | Gemma 4 E2B | Gemma 4 E4B | Nemotron 3 Nano 4B | Nemotron 3 Nano 30B-A3B |
+| --- | --- | --- | --- | --- | --- |
+| Effective params | 9B | 2.3B | 4.5B | 4B | 3B active / token (30B total, MoE) |
+| Params incl. embeddings | 9B | 5.1B | 8B | 4B | 30B |
+| Layers | 32 | 35 | 42 | 42 | 52 (23 Mamba-2 + 23 MoE + 6 attention) |
+| Max context tested on an 8GB card | - | 128K | 128K | 131072 | 262144 |
+| Tau2 tool-use average | - | 24.5% | 42.2% | - | - |
+| LiveCodeBench v6 | - | 44.0% | 52.0% | - | - |
+| Speculative decoding | self-contained MTP head | separate drafter (UNVERIFIED filenames) | separate drafter (UNVERIFIED filenames) | none | none |
 
-Tau2/LiveCodeBench figures are from Google's Gemma 4 model card ([huggingface.co/google/gemma-4-E4B](https://huggingface.co/google/gemma-4-E4B)); Qwen3.5-9B wasn't benchmarked against the same suite by this project, hence the blanks.
+Tau2/LiveCodeBench figures are from Google's Gemma 4 model card ([huggingface.co/google/gemma-4-E4B](https://huggingface.co/google/gemma-4-E4B)); Qwen3.5-9B and the two Nemotron profiles weren't benchmarked against that same suite by this project, hence the blanks. NVIDIA's own technical report puts Nemotron 3 Nano 30B-A3B at BFCL v4 53.76 vs Qwen3-30B-A3B-Thinking-2507's 46.40 (source: the Nemotron 3 Nano technical report on research.nvidia.com / its arXiv preprint - corroborated by a secondary summary, not independently re-verified against the primary PDF table) - a different benchmark suite than the Tau2/LiveCodeBench row above, so it isn't included in the table itself to avoid implying a direct comparison.
 
 **E2B is a poor fit for Claude Code's tool-calling loop** - less than a third the Tau2 tool-use score of E4B - and is offered mainly for completeness on tighter VRAM budgets. If you're picking a Gemma profile, default to E4B.
 
-**The Gemma profiles are not fully wired up yet.** `model-profiles/gemma4-e2b.sh` and `model-profiles/gemma4-e4b.sh` ship with several UNVERIFIED placeholders (drafter model repo/filenames, the Per-Layer-Embedding tensor name, exact quant file sizes) left empty on purpose rather than guessed, per this project's policy of never inventing a `llama-server` flag or filename it hasn't confirmed. `install.sh` treats each empty placeholder as "feature not available yet" and skips it with a warning rather than emit something broken. Qwen3.5-9B-MTP remains the only profile that's been run end-to-end.
+**The Gemma profiles are not fully wired up yet.** `model-profiles/gemma4-e2b.sh` and `model-profiles/gemma4-e4b.sh` ship with several UNVERIFIED placeholders (drafter model repo/filenames, the Per-Layer-Embedding tensor name, exact quant file sizes) left empty on purpose rather than guessed, per this project's policy of never inventing a `llama-server` flag or filename it hasn't confirmed. `install.sh` treats each empty placeholder as "feature not available yet" and skips it with a warning rather than emit something broken. Qwen3.5-9B-MTP and both Nemotron 3 Nano profiles have been run end-to-end and live-tested on real hardware (RTX 3080 8GB); the Gemma profiles have not.
 
 ### Per-Layer Embeddings: the opposite VRAM trade from dense-FFN offload
 
@@ -133,6 +133,14 @@ If you installed the desktop icon, double-clicking it does the same thing withou
 Nothing above is actually Claude-Code-specific under the hood - `litellm_config.yaml` exposes a plain OpenAI-compatible endpoint at `http://localhost:$PROXY_PORT/v1` (port 4000 by default), authenticated with `Authorization: Bearer $PROXY_MASTER_KEY` (`sk-local-dev-key` by default - both saved in `~/.config/claude-local-setup.conf`), and a wildcard `model_name: "*"` entry that routes any model name a client sends to the same local backend. `claude-local-toggle.sh` exists only to work around Claude Code's own OAuth-vs-proxy conflict (see above); any other OpenAI-compatible client can just point at that URL directly, no toggle needed.
 
 [Roo Code](https://docs.roocode.com/providers/openai-compatible) is one such client. In its settings, add a new API configuration profile: Provider "OpenAI Compatible", Base URL `http://localhost:4000/v1` (or your `$PROXY_PORT`), API Key your `$PROXY_MASTER_KEY`, Model any string you like (e.g. `local-llm` - the wildcard route ignores it). Roo Code keeps this as one of several named profiles you switch between from its own dropdown, so this is a one-time setup, not something you redo per session.
+
+To get `$PROXY_MASTER_KEY`'s actual value, read it back out of the config `install.sh` already saved it to:
+
+```bash
+grep PROXY_MASTER_KEY ~/.config/claude-local-setup.conf
+```
+
+That's `sk-local-dev-key` unless you set something else at the "Proxy auth token" prompt during `install.sh`. It's a local-only token gating access to your own machine's proxy port, not a real API key - the default is fine to keep unless something else on the host could reach that port.
 
 That configuration is also stable across model changes: the port and key come from `~/.config/claude-local-setup.conf`, not from whichever `model-profiles/*.sh` is active, so re-running `install.sh` and picking a different numbered profile never requires touching Roo Code's settings again - only `install.sh`'s own model-download step changes. (This is the same one-stable-endpoint-many-models pattern tools like [Continue](https://github.com/continuedev/continue) use for the same reason.)
 
