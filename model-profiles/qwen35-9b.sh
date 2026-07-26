@@ -103,11 +103,43 @@ CACHE_TYPE_V="q4_0"
 # Not a Per-Layer-Embeddings model - nothing to offload here.
 PLE_TENSOR_REGEX=""
 
-# Empty = let llama-server / the client use its own defaults (this project's
-# prior behaviour: no --temp/--top-p/--top-k were ever passed for Qwen).
-DEFAULT_TEMP=""
-DEFAULT_TOP_P=""
-DEFAULT_TOP_K=""
+# CONFIRMED 2026-07-25, live RTX 3080 8GB, UD-Q4_K_XL, real /v1/chat/completions
+# path (not the raw /completion endpoint used by the earlier long-context
+# probe above): this project's prior claim that "Qwen already defaults to
+# reasoning off, nothing to toggle" was WRONG for the real chat-template
+# path - a plain request with zero flags sent came back with reasoning_content
+# populated (13.5s, 277 completion tokens, for a tool call a forced-off run
+# does in ~1.7s/50 tokens). Same failure class this project already found
+# and fixed for Nemotron 3 Nano 30B-A3B (see nemotron3-nano-30b.sh and
+# README.md's "Thinking mode" section) - just not confirmed here until now.
+#
+# Qwen/Qwen3.5-9B's own model card and Unsloth's docs give conflicting
+# recipes for how this project actually runs the model (thinking forced
+# off, tool-calling/agentic use) - the card has no "tool calling" bucket,
+# only general/reasoning/precise-coding, and even its own "reasoning"
+# bucket is internally inconsistent (see
+# https://huggingface.co/Qwen/Qwen3.5-9B/discussions/51). Tested both
+# candidates head-to-head with a live grep+read_file tool-call prompt
+# against this profile's running server, 5 reps each, --chat-template-kwargs
+# '{"enable_thinking":false}' held constant, max_tokens 500:
+#   Qwen card "Non-Thinking/Instruct, General" (temp .7/top_p .8/top_k 20):
+#     5/5 correct tool calls, but 3/5 runs also leaked stray prose alongside
+#     the tool call; avg 64.8 completion tokens, avg 2.90s.
+#   Unsloth's own doc example (temp .6/top_p .95/top_k 20, run alongside
+#     enable_thinking:false in their command despite being the card's
+#     "Thinking/Precise-coding" numbers): 5/5 correct tool calls, 0/5 leaked
+#     prose, avg 49.6 completion tokens, avg 1.72s.
+# Unsloth's recipe won on every axis (fewer tokens, faster, cleaner output)
+# so it's what's set below, not the Qwen card's own "matching" bucket.
+DEFAULT_TEMP="0.6"
+DEFAULT_TOP_P="0.95"
+DEFAULT_TOP_K="20"
+
+# CONFIRMED 2026-07-25 (see DEFAULT_TEMP comment above): forcing this
+# explicitly is a real ~8x speed/token win for tool calls, not a formality -
+# add it. Matches the other three profiles' pattern (gemma4-e4b.sh,
+# nemotron3-nano-4b.sh, nemotron3-nano-30b.sh all set this).
+THINKING_KWARG_KEY="enable_thinking"
 
 # "fragment|size_mib|description" - fragment matches the GGUF filename,
 # size_mib feeds the context-length estimate, description is shown in the

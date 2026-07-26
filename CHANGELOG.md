@@ -2,6 +2,14 @@
 
 This file tracks real changes to this repository. Entries are grouped into numbered rounds of work, with each individual change getting its own running number rather than restarting at 1 per round.
 
+### Qwen3.5-9B agentic tool-calling correction (round twenty-eight)
+
+93. Corrected `model-profiles/qwen35-9b.sh`: this project previously claimed Qwen3.5-9B "already defaults to reasoning off, nothing to toggle" and left `THINKING_KWARG_KEY` unset. A live test against the real `/v1/chat/completions` path (not the raw `/completion` endpoint the original check used) showed thinking is NOT off by default on that path - a plain request with no flags sent burned 277 completion tokens and 13.5s on `reasoning_content` for a tool call a forced-off request does in ~50 tokens/1.7s. Added `THINKING_KWARG_KEY="enable_thinking"`, matching the other three profiles.
+
+94. Tested Qwen/Qwen3.5-9B's own model card sampling recipe against Unsloth's own doc recipe head-to-head (the two disagree on which bucket applies to forced-thinking-off tool-calling use, and the card's own "reasoning" bucket is internally inconsistent - see huggingface.co/Qwen/Qwen3.5-9B/discussions/51) via a live grep+read_file tool-call prompt, 5 reps each. Unsloth's recipe (temp 0.6/top_p 0.95/top_k 20) won on every axis measured (49.6 avg completion tokens vs 64.8, 1.72s vs 2.90s, 0/5 vs 3/5 runs with leaked stray prose). Set `DEFAULT_TEMP="0.6"`, `DEFAULT_TOP_P="0.95"`, `DEFAULT_TOP_K="20"` in `model-profiles/qwen35-9b.sh` accordingly.
+
+95. Updated README.md's "Thinking mode" section and model-comparison table to reflect the correction - Qwen3.5-9B-MTP's thinking-mode status is now "confirmed off (forced explicitly)" rather than the previous "partially checked, not fully confirmed" caveat.
+
 ### Qwen3.5-9B speed optimization via KV cache quant benchmarking (round twenty-seven)
 
 89. Added comprehensive benchmarking harness in `bench/` (qwen-bench.sh, build_haystack.py, query_and_grade.py, query_and_grade.py, run-phase2.sh) to sweep KV cache quant combinations and CPU-resident FFN layer counts at fixed 131072-token context. Full raw results committed to bench/qwen-results.md. The sweep revealed that asymmetric KV cache types (q8_0/q5_1, q8_0/q4_0, q5_1/q5_1) collapse onto a catastrophically slow non-fused CUDA path on this project's llama.cpp build (plausibly due to GGML_CUDA_FA_ALL_QUANTS=OFF), while symmetric q8_0/q8_0 and q4_0/q4_0 stay fast. q4_0/q4_0 uses ~1GB less VRAM at the same layer count with no quality difference, which funds dropping CPU-resident FFN layers from N=24 to N=11. Measured at ~99870 tokens: prefill +21.0% (1019.2 -> 1233.5 tok/s), decode +59.8% (24.57 -> 39.26 tok/s), quality still passes 3/3 sentinels + correct code generation. Thread count made no measurable difference once CPU layers dropped to 11.
