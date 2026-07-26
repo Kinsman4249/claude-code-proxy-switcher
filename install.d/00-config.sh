@@ -135,3 +135,27 @@ ask() {
     printf -v "$varname" '%s' "$answer"
   fi
 }
+
+# ask_confirm_override VAR_NAME "question text" "recommended value" "why"
+# Same as ask(), but for a setting a model profile has actually benchmarked
+# (not guessed) a good value for: if the user types something OTHER than
+# that recommended value, they have to explicitly type "yes" to confirm the
+# override, with the reason printed first. Pressing Enter to accept the
+# recommended value (already the shown default) is unaffected - this only
+# adds friction to changing away from a tested-good number, not to keeping
+# it. Profiles that don't set a recommendation should keep using plain ask().
+ask_confirm_override() {
+  local varname="$1" question="$2" recommended="$3" reason="$4" current="${!1}" answer confirm
+  read -rp "$question [$current]: " answer
+  if [ -n "$answer" ] && [ "$answer" != "$recommended" ]; then
+    echo "NOTE: $recommended is the tested value for this profile - $reason"
+    read -rp "Override it with '$answer' anyway? (yes/no) [no]: " confirm
+    if [ "$confirm" != "yes" ]; then
+      echo "Keeping the tested value: $recommended"
+      answer="$recommended"
+    fi
+  fi
+  if [ -n "$answer" ]; then
+    printf -v "$varname" '%s' "$answer"
+  fi
+}

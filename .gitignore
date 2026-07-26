@@ -1,3 +1,8 @@
 todo.md
 handoff.md
 $HOME/
+
+# bench/ - per-run debug logs and query_and_grade.py's generated grading
+# output are transient, not something future sessions need committed
+bench/logs/
+bench/*.result.*.json

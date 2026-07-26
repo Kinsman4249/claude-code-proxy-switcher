@@ -47,6 +47,59 @@ BYTES_PER_TOKEN=16384
 # default.
 RECOMMENDED_CTX_8GB=131072
 
+# SPEED SWEEP, CONFIRMED 2026-07-25, RTX 3080 8GB, UD-Q4_K_XL, -c 131072:
+# the 24-CPU-FFN-layer config above (needed to fit 131072 ctx with the
+# q8_0/q8_0 KV cache default) was the slowest config this project could
+# produce for this model. bench/qwen-bench.sh swept KV cache quant type,
+# then binary-searched the minimum CPU-resident FFN layer count for the
+# type that won - full methodology and raw numbers in bench/qwen-results.md.
+#
+# KV cache type mattered far more than expected: q8_0/q5_1, q8_0/q4_0, and
+# q5_1/q5_1 all loaded fine and passed the smoke test, but a REAL ~36K-token
+# /completion on any of them fell onto a catastrophically slow path (30+
+# minutes for a request that normally takes under a minute - confirmed via
+# even a short cache-hit follow-up alone taking 100+ seconds instead of
+# ~600ms). Only q8_0/q8_0 (this project's old default) and q4_0/q4_0 stayed
+# fast. Root cause not fully confirmed by reading llama.cpp source, but the
+# pattern (symmetric q8_0 or q4_0 fine, q5_1 or any K!=V mismatch collapses)
+# matches this project's llama.cpp build having GGML_CUDA_FA_ALL_QUANTS=OFF -
+# plausibly no fused flash-attention CUDA kernel for those combos on this
+# build, forcing a much slower fallback. Worth retrying if a future rebuild
+# turns that flag on (see bench/qwen-results.md's notes).
+#
+# q4_0/q4_0 uses ~1GB less VRAM than q8_0/q8_0 at the same layer count with
+# no quality difference (still 3/3 sentinels + correct generated code, both
+# at ~36.5K AND ~99870-token depth) - that freed GB directly funds fewer
+# CPU-resident FFN layers, which is where the actual speedup comes from.
+# Bisecting on the freed VRAM (not on raw decode speed at a fixed layer
+# count, which barely differs between KV types since CPU-offloaded layers
+# dominate either way) found override-tensor N=11 is enough, not N=24.
+#
+# Measured at ~99870 tokens (99.9% of the way to -c 131072, most
+# representative depth), q4_0/q4_0 + N=11 vs the old q8_0/q8_0 + N=24:
+#   prefill: 1019.2 -> 1233.5 tok/s   (+21.0%)
+#   decode:   24.57 ->  39.26 tok/s   (+59.8%)
+#   VRAM:      7668 ->    7799 MiB    (still fits, ~393 MiB headroom)
+# Thread count (-t 6/8/16 vs unset) made no measurable difference once
+# CPU-resident layers dropped to 11 - within run-to-run noise (see
+# bench/qwen-results.md's thread-sweep rows), so -t is intentionally still
+# not passed anywhere in this project.
+# Read by install.d/20-prompts-model.sh: pre-fills the interactive
+# "layers to force onto CPU" prompt with this tested value instead of the
+# generic light-touch default of 2, and requires an explicit "yes" to type
+# in something different (see ask_confirm_override() in
+# install.d/00-config.sh). A deliberate override from a previous run of
+# THIS profile is still respected on reruns - only switching profiles or a
+# first-ever install resets to this value.
+LLAMA_CPU_FFN_LAYERS_RECOMMENDED=11
+
+# KV cache quant type - not asked interactively (see the comment next to
+# CACHE_TYPE_K/V in install.d/80-launcher.sh: the space of viable combos on
+# this project's llama.cpp build turned out to be a landmine, not something
+# to ask a user blind - see the SPEED SWEEP comment above for what broke).
+CACHE_TYPE_K="q4_0"
+CACHE_TYPE_V="q4_0"
+
 # Not a Per-Layer-Embeddings model - nothing to offload here.
 PLE_TENSOR_REGEX=""
 

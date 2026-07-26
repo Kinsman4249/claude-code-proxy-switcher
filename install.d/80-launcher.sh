@@ -9,6 +9,19 @@
 
 # --- Step 10: generate start-local-llama.sh with all the tuning flags baked in ---
 build_start_script() {
+  # KV cache quant type: q8_0/q8_0 unless a model profile sets its own
+  # (CACHE_TYPE_K/CACHE_TYPE_V are new, optional profile fields - a profile
+  # that doesn't set them gets byte-identical output to before this existed).
+  # Not exposed as an install.sh prompt: the space of viable combos is
+  # build- and model-specific (see model-profiles/qwen35-9b.sh's comment on
+  # this - mismatched K/V quant types silently fell onto a catastrophically
+  # slow non-fused CUDA path on this project's 2026-07-23 llama.cpp build,
+  # not a quality problem, just no fast kernel for that combo), so this is a
+  # profile-author decision made after actually benchmarking it, not
+  # something to ask a user blind.
+  CACHE_TYPE_K="${CACHE_TYPE_K:-q8_0}"
+  CACHE_TYPE_V="${CACHE_TYPE_V:-q8_0}"
+
   # Optional VRAM-headroom flags (see the prompts above): neither is on by
   # default, both trade some speed for more room when the quant/context
   # combination above doesn't fit.
@@ -174,7 +187,7 @@ build_start_script() {
 #
 $NGL_COMMENT
 # -fa on                  flash attention (required for KV cache quant below)
-# --cache-type-k/v q8_0   Q8 KV cache quantization, halves KV cache VRAM cost
+# --cache-type-k/v $CACHE_TYPE_K/$CACHE_TYPE_V   KV cache quantization (see model-profiles/$MODEL_PROFILE.sh if not q8_0/q8_0)
 $SPEC_COMMENT
 $FIT_COMMENT
 # --no-webui              disable llama.cpp's built-in browser chat UI - you
@@ -218,7 +231,7 @@ distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
   -b $LLAMA_BATCH_SIZE \\
   -n $LLAMA_N_PREDICT \\
   -fa on \\
-  --cache-type-k q8_0 --cache-type-v q8_0 \\
+  --cache-type-k $CACHE_TYPE_K --cache-type-v $CACHE_TYPE_V \\
   $FIT_FLAG \\
   --no-webui \\
   --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS \\
@@ -294,7 +307,7 @@ launch_and_verify() {
   echo "  distrobox enter \"$CONTAINER_NAME\" -- \"$LLAMA_SERVER_BIN\" \\"
   echo "    -m \"$LLAMA_MODEL_PATH\"$NGL_FLAG \\"
   echo "    -c $LLAMA_CTX_SIZE -b $LLAMA_BATCH_SIZE -n $LLAMA_N_PREDICT \\"
-  echo "    -fa on --cache-type-k q8_0 --cache-type-v q8_0 \\"
+  echo "    -fa on --cache-type-k $CACHE_TYPE_K --cache-type-v $CACHE_TYPE_V \\"
   echo "    $FIT_FLAG \\"
   echo "    --no-webui \\"
   echo "    --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS"

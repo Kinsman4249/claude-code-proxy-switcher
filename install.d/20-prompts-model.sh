@@ -76,6 +76,14 @@ prompt_model_profile() {
     GGUF_PATTERN=""
     QUANT_WEIGHT_MIB=""
     QUANT_CHOICE=""
+    # Same idea for LLAMA_CPU_FFN_LAYERS: only reset it to this profile's
+    # tested value (LLAMA_CPU_FFN_LAYERS_RECOMMENDED, optional field, see
+    # model-profiles/qwen35-9b.sh) when actually switching TO this profile -
+    # a deliberate override on a previous run of the SAME profile is left
+    # alone on reruns, same as everything else in this block. Profiles that
+    # don't set a recommendation (Nemotron, Gemma) leave LLAMA_CPU_FFN_LAYERS
+    # untouched here, same as before this existed.
+    [ -n "${LLAMA_CPU_FFN_LAYERS_RECOMMENDED:-}" ] && LLAMA_CPU_FFN_LAYERS="$LLAMA_CPU_FFN_LAYERS_RECOMMENDED"
     LAST_MODEL_PROFILE="$MODEL_PROFILE"
   fi
   [ -z "$HF_REPO" ] && HF_REPO="$HF_REPO_DEFAULT"
@@ -143,7 +151,30 @@ prompt_vram_and_context() {
   # model-profiles/gemma4-e*b.sh. Don't hand-roll a formula for it. Instead
   # let llama.cpp fit the context itself (--fit on, set below in Step 10)
   # and read the measured number back from the log after first start.
-  if [ "$KV_MODEL" = "manual" ]; then
+  if [ "$KV_MODEL" = "manual" ] && [ -n "${RECOMMENDED_CTX_8GB:-}" ] && [ -n "${LLAMA_CPU_FFN_LAYERS_RECOMMENDED:-}" ] && [ "$GPU_VRAM_MIB" -le 9000 ] 2>/dev/null; then
+    # This profile has an actual live-tested number for this card (see the
+    # SPEED SWEEP comment in model-profiles/$MODEL_PROFILE.sh), not just a
+    # formula guess - use it directly instead of the naive estimate below.
+    # The naive formula assumes the ENTIRE quant sits on GPU (as if
+    # --override-tensor is never used), so for a profile whose tested
+    # config deliberately offloads several FFN layers to system RAM to fund
+    # a bigger KV cache, it drastically undercounts what actually fits -
+    # this was a real reported bug: it recommended ~56K tokens for a config
+    # confirmed to hold 131072 fine. That confirmed number came from a real
+    # server that actually loaded and passed a quality check, so trust it
+    # over the formula below.
+    echo
+    echo "Estimate skipped: this profile has a live-tested context ceiling for"
+    echo "an 8GB card (see model-profiles/$MODEL_PROFILE.sh) that already"
+    echo "accounts for the CPU-FFN-offload trade the next prompt sets up -"
+    echo "the formula below would undercount it, since it assumes no offload"
+    echo "at all. Confirmed working: $RECOMMENDED_CTX_8GB tokens."
+    LLAMA_CTX_SIZE="$RECOMMENDED_CTX_8GB"
+    echo
+    echo "Context window (-c / --ctx-size). Larger lets Claude Code's full prompt fit"
+    echo "without truncation, but costs more VRAM on top of the quant above."
+    ask LLAMA_CTX_SIZE "Context length in tokens"
+  elif [ "$KV_MODEL" = "manual" ]; then
     # Qwen3.5-9B is a hybrid dense model: 32 layers total, but only every 4th
     # layer (8 of 32) is full quadratic attention - the other 24 are
     # linear/DeltaNet attention with a small fixed-size recurrent state that
@@ -245,6 +276,20 @@ prompt_vram_headroom() {
     echo "   CPU/GPU placement on its own for this profile; there is no safe"
     echo "   way to combine that with this flag, so it's forced off here."
     LLAMA_CPU_FFN_LAYERS=0
+  elif [ -n "${LLAMA_CPU_FFN_LAYERS_RECOMMENDED:-}" ]; then
+    echo "1) Force the last N layers' FFN weights onto CPU RAM instead of GPU"
+    echo "   (via --override-tensor). This profile has an actual measured"
+    echo "   answer for this, not a guess: bench/qwen-bench.sh swept KV cache"
+    echo "   quant type and binary-searched the minimum CPU-resident layer"
+    echo "   count on real hardware (see the SPEED SWEEP comment in"
+    echo "   model-profiles/$MODEL_PROFILE.sh for the numbers and methodology)."
+    echo "   $LLAMA_CPU_FFN_LAYERS_RECOMMENDED is the tested-fastest value that"
+    echo "   still fits RECOMMENDED_CTX_8GB and passes a real quality check -"
+    echo "   pre-filled below. Only raise it if you need to free more VRAM than"
+    echo "   that leaves and can accept slower generation; only lower it if"
+    echo "   you've confirmed on your own card it still fits."
+    ask_confirm_override LLAMA_CPU_FFN_LAYERS "Layers to force onto CPU (0-$((N_LAYERS - 1)), 0 to disable)" \
+      "$LLAMA_CPU_FFN_LAYERS_RECOMMENDED" "measured fastest value that still fits and passes the quality check for this profile's quant/KV settings, see model-profiles/$MODEL_PROFILE.sh"
   else
     echo "1) Force the last N layers' FFN weights onto CPU RAM instead of GPU"
     echo "   (via --override-tensor). IMPORTANT DIFFERENCE FROM --n-cpu-moe ON"
