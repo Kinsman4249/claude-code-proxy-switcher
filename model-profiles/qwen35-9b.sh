@@ -20,6 +20,33 @@ N_LAYERS=32
 KV_MODEL="manual"                               # manual | probe
 BYTES_PER_TOKEN=16384
 
+# CONFIRMED 2026-07-25, RTX 3080 8GB, unsloth/Qwen3.5-9B-MTP-GGUF Q4_K_M:
+# a real long-context needle-retrieval + code-generation test (haystack of
+# real llama.cpp source, three sentinel functions buried at ~10/50/90% depth,
+# asked to find all three and write a small Python function using them) came
+# back 3/3 correct with valid generated code at every context size tried:
+# ~14K tokens (Q5_K_M), ~36K (UD-Q4_K_XL), ~50K (Q4_K_M, GPU-only, default
+# --override-tensor N=2), and ~105K (Q4_K_M, -c 131072, GPU-only headroom
+# exhausted so this one needed --override-tensor raised to N=24 - 24 of 32
+# dense FFN layers moved to CPU RAM - not the light default; a real -c 131072
+# /completion request at that override-tensor setting used 7819/8192 MiB and
+# completed the 105306-token prompt + generation in 107s). No accuracy drop
+# observed at any size tested, but this is one repeated needle+codegen probe,
+# not a coding benchmark suite (no LiveCodeBench/Tau2 numbers exist for this
+# profile - see README.md's model-comparison table).
+#
+# Bottom line: Q4_K_M's *natural* (default N=2 offload) ceiling on this card
+# is close to Q4_K_M's ~64-76K formula estimate in install.d/20-prompts-model.sh,
+# not 128K - reaching a full 131072 (Claude Haiku-matching) context on 8GB
+# requires deliberately raising --override-tensor well past the light
+# default, trading some generation speed for the extra KV cache room. Kept
+# at 131072 anyway, same rationale as nemotron3-nano-4b.sh's
+# RECOMMENDED_CTX_8GB: it matches Claude Haiku's ~128K context, a goal
+# unrelated to whether it fits with zero tradeoffs - raising override-tensor
+# to get there is a deliberate call for whoever installs this, not a silent
+# default.
+RECOMMENDED_CTX_8GB=131072
+
 # Not a Per-Layer-Embeddings model - nothing to offload here.
 PLE_TENSOR_REGEX=""
 

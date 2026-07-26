@@ -25,7 +25,7 @@ It does not try to be a hybrid router that transparently falls back to cloud whe
 | Effective params | 9B | 2.3B | 4.5B | 4B | 3B active / token (30B total, MoE) |
 | Params incl. embeddings | 9B | 5.1B | 8B | 4B | 30B |
 | Layers | 32 | 35 | 42 | 42 | 52 (23 Mamba-2 + 23 MoE + 6 attention) |
-| Max context tested on an 8GB card | - | 128K | 128K | 131072 | 262144 |
+| Max context tested on an 8GB card | 131072 (Q4_K_M, needs heavier CPU offload than default - see below) | 128K | 128K | 131072 | 262144 |
 | Tau2 tool-use average | - | 24.5% | 42.2% | - | - |
 | LiveCodeBench v6 | - | 44.0% | 52.0% | - | - |
 | Speculative decoding | self-contained MTP head | separate drafter (UNVERIFIED filenames) | separate drafter (UNVERIFIED filenames) | none | none |
@@ -63,7 +63,22 @@ Reasoning cost roughly 13x the tokens and 11x the latency for a tool call that w
 
 Turn it on with `install.sh --enable-thinking` (turn it back off with `--disable-thinking`) - deliberately a command-line flag, not part of the interactive prompt flow, so it can't get left on by an "Enter to keep previous answer" re-run. `model-profiles/gemma4-e4b.sh`, `nemotron3-nano-4b.sh`, and `nemotron3-nano-30b.sh` each declare `THINKING_KWARG_KEY="enable_thinking"` (a capability marker - which chat-template kwarg this model's template uses), and `install.d/80-launcher.sh` emits `--chat-template-kwargs` with that key set to whatever `ENABLE_THINKING` resolved to, explicitly true or false either way, so the deployed script never depends on a GGUF's undocumented baked-in default.
 
-`qwen35-9b.sh` doesn't set `THINKING_KWARG_KEY` - Qwen3.5-9B already defaults to reasoning off per Qwen/unsloth's own docs, so there's nothing to force (not independently live-tested here, no Qwen model is currently downloaded in this install).
+`qwen35-9b.sh` doesn't set `THINKING_KWARG_KEY` - Qwen3.5-9B already defaults to reasoning off per Qwen/unsloth's own docs, so there's nothing to force. Partially live-tested 2026-07-25: raw `/completion` requests (no chat template, no `--chat-template-kwargs` sent at all) against the downloaded Q4_K_M/Q5_K_M/UD-Q4_K_XL GGUFs consistently started their response with a bare `</think>` token before any content, at every context size tried. That's a weaker check than an actual `--chat-template-kwargs '{"enable_thinking":false}'` request through the real proxy path - it shows the raw model's own completion bias, not confirmation that the served endpoint behaves the same - so treat "reasoning off, nothing to toggle" as still not fully confirmed end-to-end for this profile.
+
+### Qwen3.5-9B-MTP long-context coding benchmark (2026-07-25, RTX 3080 8GB)
+
+The user asked whether any Qwen3.5-9B-MTP quant could hit a genuine 128K context window and stay accurate enough to code with, on this project's reference 8GB card. Method: a needle-in-haystack + code-generation probe, not a standard suite (no LiveCodeBench/Tau2/HumanEval numbers exist for this profile - don't compare the pass/fail results below against the Tau2/LiveCodeBench columns in the table above, they aren't the same kind of measurement). Haystack = real llama.cpp C/C++ source concatenated to the target size, with three uniquely-named marker functions (`get_partition_flux_*`) returning random sentinel integers spliced in at roughly 10%/50%/90% depth; the prompt then asks the model to state all three integers and write a small Python function summing them - checks both long-range retrieval and basic code correctness in one shot. Every run used `-fa on --cache-type-k q8_0 --cache-type-v q8_0 --spec-type draft-mtp --spec-draft-n-max 2`, temperature 0, via the raw `/completion` endpoint (see the caveat above - this is not the same code path as a real chat request through the proxy).
+
+| Quant | Context tried | Real VRAM used | Sentinels found | Valid generated code | Time |
+| --- | --- | --- | --- | --- | --- |
+| Q5_K_M | 14123 tokens (of `-c 16384`) | 7235 MiB | 3/3 | yes | 8.5s |
+| UD-Q4_K_XL | 36516 tokens (of `-c 49152`) | 7609 MiB | 3/3 | yes | 21.2s |
+| Q4_K_M | 49944 tokens (of `-c 65536`, default `--override-tensor` N=2) | 7787 MiB | 3/3 | yes | 30.2s |
+| Q4_K_M | 105306 tokens (of `-c 131072`, `--override-tensor` raised to N=24 - see below) | 7819 MiB | 3/3 | yes | 107.2s |
+
+All four passed cleanly - no accuracy drop observed across roughly an 8x range of context sizes or across quants. But **128K only fits on this card at all with a much heavier CPU-FFN-offload setting than this project's light default**: an attempt at `-c 131072` with the light default (`--override-tensor` N=2, i.e. only the last 2 of 32 layers' FFN weights on CPU) OOM'd outright (`cudaMalloc failed: out of memory` allocating the KV cache buffer). Getting 131072 to fit at all required moving 24 of 32 layers' dense FFN weights to CPU RAM (`--override-tensor 'blk\.([8-9]|1[0-9]|2[0-9]|3[01])\.ffn_(gate|up|down)\.weight=CPU'`) - a much heavier trade than the 2-layer default this project otherwise recommends (see "Getting more headroom than that" below), and one that costs real per-token latency since Qwen3.5-9B has no MoE layers to make CPU-offloaded FFN cheap (every offloaded layer's full dense FFN matrix reads from RAM on every token). The 107s for the 105K-token run includes both prompt processing and generation, not prompt processing alone, so don't read it as a per-token generation-speed number on its own.
+
+Bottom line: **yes, Qwen3.5-9B-MTP quants stayed accurate on this single-probe test all the way out to ~105K tokens**, including at the 131072-ctx/heavy-offload configuration - but reaching a true 128K window on an 8GB card means deliberately trading generation speed for it (N=24 offload, not this project's N=2 default), not something that fits "for free" the way Nemotron 3 Nano's MoE-based offload does. If you want 128K without that tradeoff, you need more than 8GB of VRAM. See `model-profiles/qwen35-9b.sh` for the same finding in comment form next to `RECOMMENDED_CTX_8GB`.
 
 ### TurboQuant: considered, not adopted
 
@@ -160,7 +175,7 @@ Values below come straight from the matching `model-profiles/*.sh` `RECOMMENDED_
 | Nemotron 3 Nano 4B | `131072` | unchecked | off (`--disable-thinking`, the project default) | Text-only. Confirmed live on an RTX 3080 8GB - see `model-profiles/nemotron3-nano-4b.sh`. |
 | Gemma 4 E4B | `131072` | leave unchecked anyway | off (project never sends the `<|think|>` trigger) | Model is multimodal upstream (text/image/audio), but this project only ever talks to it over a text-only endpoint (see "Multimodal weights" above) - `install.sh` never passes `--mmproj`, so there's no working image path even though the model card supports one. Not yet live-tested end-to-end (see "Known limitations") - treat the context number as the profile's stated target, not a confirmed measurement. |
 | Gemma 4 E2B | not yet tested | leave unchecked anyway | off | Several profile values are UNVERIFIED placeholders (see "Choosing a model") - don't configure a client against this profile yet. |
-| Qwen3.5-9B-MTP | not yet tested | unchecked | n/a (reasoning off by default per Qwen/unsloth's docs, nothing to toggle) | No `RECOMMENDED_CTX_8GB` recorded in the profile yet. |
+| Qwen3.5-9B-MTP | `131072` | unchecked | n/a (reasoning off by default per Qwen/unsloth's docs; partially checked, see "Thinking mode" above) | Confirmed live 2026-07-25 on an RTX 3080 8GB with Q4_K_M - see "Qwen3.5-9B-MTP long-context coding benchmark" above and `model-profiles/qwen35-9b.sh`. Reaching this context on 8GB needs `--override-tensor` raised well past this project's light default (N=2 -> N=24) - if you'd rather not take that speed tradeoff, use a smaller context (Q4_K_M fit comfortably at ~50K tokens with the default N=2). |
 
 Leave **Enable R1 model parameters** unchecked for every profile above (that's for QwQ/R1-style models that 400 without it, not applicable here), **Enable Reasoning Effort** unchecked (thinking mode here is controlled by `install.sh --enable-thinking`/`--disable-thinking`, not a per-request client field - see "Thinking mode" above), and **Input/Output Price** at `0` (it's local, nothing is billed).
 
