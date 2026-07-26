@@ -2,7 +2,16 @@
 
 This file tracks real changes to this repository. Entries are grouped into numbered rounds of work, with each individual change getting its own running number rather than restarting at 1 per round.
 
-### Nemotron sampling correction and output token safety cap (round twenty-six)
+### Qwen3.5-9B speed optimization via KV cache quant benchmarking (round twenty-seven)
+
+89. Added comprehensive benchmarking harness in `bench/` (qwen-bench.sh, build_haystack.py, query_and_grade.py, query_and_grade.py, run-phase2.sh) to sweep KV cache quant combinations and CPU-resident FFN layer counts at fixed 131072-token context. Full raw results committed to bench/qwen-results.md. The sweep revealed that asymmetric KV cache types (q8_0/q5_1, q8_0/q4_0, q5_1/q5_1) collapse onto a catastrophically slow non-fused CUDA path on this project's llama.cpp build (plausibly due to GGML_CUDA_FA_ALL_QUANTS=OFF), while symmetric q8_0/q8_0 and q4_0/q4_0 stay fast. q4_0/q4_0 uses ~1GB less VRAM at the same layer count with no quality difference, which funds dropping CPU-resident FFN layers from N=24 to N=11. Measured at ~99870 tokens: prefill +21.0% (1019.2 -> 1233.5 tok/s), decode +59.8% (24.57 -> 39.26 tok/s), quality still passes 3/3 sentinels + correct code generation. Thread count made no measurable difference once CPU layers dropped to 11.
+
+90. Updated `model-profiles/qwen35-9b.sh` with new fields: `CACHE_TYPE_K="q4_0"` and `CACHE_TYPE_V="q4_0"` (replacing hardcoded q8_0), and `LLAMA_CPU_FFN_LAYERS_RECOMMENDED=11` (replacing the generic default of 2). Added detailed SPEED SWEEP comment documenting methodology, raw numbers, and the KV cache type landmine finding.
+
+91. Updated `install.d/20-prompts-model.sh` and `install.d/80-launcher.sh` to read profile-specific `CACHE_TYPE_K/V` and `LLAMA_CPU_FFN_LAYERS_RECOMMENDED` values instead of hardcoded defaults. Updated `install.d/00-config.sh` to pre-fill the interactive CPU-offload-layers prompt with the profile's tested value and require explicit "yes" to override, preventing accidental regression from a previously-benchmarked config.
+
+92. Updated `README.md` with new "Qwen3.5-9B speed sweep" section documenting the benchmark methodology, KV cache type findings, and before/after performance table. Updated model-comparison table and Roo Code settings table. Added `bench/logs/` and `bench/*.result.*.json` to `.gitignore` for transient per-run output. Fixed hardcoded `/home/someone` path in `bench/qwen-bench.sh` to use `$HOME` instead.
+
 
 87. Corrected `model-profiles/nemotron3-nano-30b.sh` sampling defaults. The model card and unsloth's GGUF params file both list two different recipes - temperature 1.0 / top_p 1.0 for reasoning tasks, and temperature 0.6 / top_p 0.95 for tool calling. This profile runs with thinking disabled for Claude Code's tool-calling workload, so the tool-calling recipe is the correct one. An earlier version of this profile had wrongly applied the reasoning-task parameters, which is a likely direct cause of degenerate tool-call and text repeat loops during agentic use. Changed `DEFAULT_TEMP` from 1.0 to 0.6 and `DEFAULT_TOP_P` from 1.0 to 0.95, with detailed comment documenting the root cause and both available recipes.
 

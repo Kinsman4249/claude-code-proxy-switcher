@@ -76,14 +76,15 @@ prompt_model_profile() {
     GGUF_PATTERN=""
     QUANT_WEIGHT_MIB=""
     QUANT_CHOICE=""
-    # Same idea for LLAMA_CPU_FFN_LAYERS: only reset it to this profile's
-    # tested value (LLAMA_CPU_FFN_LAYERS_RECOMMENDED, optional field, see
-    # model-profiles/qwen35-9b.sh) when actually switching TO this profile -
-    # a deliberate override on a previous run of the SAME profile is left
-    # alone on reruns, same as everything else in this block. Profiles that
-    # don't set a recommendation (Nemotron, Gemma) leave LLAMA_CPU_FFN_LAYERS
-    # untouched here, same as before this existed.
-    [ -n "${LLAMA_CPU_FFN_LAYERS_RECOMMENDED:-}" ] && LLAMA_CPU_FFN_LAYERS="$LLAMA_CPU_FFN_LAYERS_RECOMMENDED"
+    # LLAMA_CPU_FFN_LAYERS is NOT reset here (unlike the fields above) - see
+    # prompt_vram_headroom() below, where it's unconditionally reset to
+    # LLAMA_CPU_FFN_LAYERS_RECOMMENDED (when a profile sets one) right
+    # before that prompt is shown, every run, not just on a profile switch.
+    # An earlier version of this reset only fired on profile switch, which
+    # meant a stale saved answer from before this profile had a tested
+    # recommendation (or from before this feature existed at all) kept
+    # showing as the prompt's default forever, directly contradicting the
+    # "N is pre-filled below" text above the prompt - caught live 2026-07-25.
     LAST_MODEL_PROFILE="$MODEL_PROFILE"
   fi
   [ -z "$HF_REPO" ] && HF_REPO="$HF_REPO_DEFAULT"
@@ -288,6 +289,14 @@ prompt_vram_headroom() {
     echo "   pre-filled below. Only raise it if you need to free more VRAM than"
     echo "   that leaves and can accept slower generation; only lower it if"
     echo "   you've confirmed on your own card it still fits."
+    # Unconditional, every run - NOT just on a profile switch (see the
+    # comment above the reset block earlier in this file for why: a stale
+    # saved value must never be shown as this prompt's default, since the
+    # text above just told you a specific number is "pre-filled below").
+    # ask_confirm_override still requires typing "yes" to move away from
+    # this, so a real prior override just costs one re-confirmation per
+    # run rather than silently vanishing.
+    LLAMA_CPU_FFN_LAYERS="$LLAMA_CPU_FFN_LAYERS_RECOMMENDED"
     ask_confirm_override LLAMA_CPU_FFN_LAYERS "Layers to force onto CPU (0-$((N_LAYERS - 1)), 0 to disable)" \
       "$LLAMA_CPU_FFN_LAYERS_RECOMMENDED" "measured fastest value that still fits and passes the quality check for this profile's quant/KV settings, see model-profiles/$MODEL_PROFILE.sh"
   else
