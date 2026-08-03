@@ -299,8 +299,15 @@ if ! distrobox enter "$CONTAINER_NAME" -- bash -lc 'command -v openhands' >/dev/
       PY=python3.12
     fi
     if ! "\$PY" -m pip --version >/dev/null 2>&1; then
-      echo "pip module not found for \$PY - installing via dnf..." >&2
-      sudo dnf install -y python3.12-pip
+      # Fedora does not ship a per-minor-version "python3.12-pip" dnf
+      # package (confirmed against this project'"'"'s own Fedora Distrobox
+      # image, which errored "No match for argument: python3.12-pip"), and
+      # the version dnf'"'"'s plain "python3-pip" happens to target won'"'"'t
+      # necessarily match \$PY. ensurepip is a stdlib module bundled with
+      # every CPython 3.4+ build, so it installs pip for this exact
+      # interpreter regardless of distro packaging.
+      echo "pip module not found for \$PY - bootstrapping via ensurepip..." >&2
+      sudo "\$PY" -m ensurepip --upgrade
     fi
     sudo "\$PY" -m pip install --break-system-packages -q openhands
   ' 2>&1 | tee -a "\$LOG_FILE"
