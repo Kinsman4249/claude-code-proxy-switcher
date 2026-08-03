@@ -106,7 +106,7 @@ PLE_TENSOR_REGEX=""
 # nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 and
 # unsloth/Nemotron-3-Nano-30B-A3B-GGUF directly). This profile runs with
 # thinking off (see ENABLE_THINKING/THINKING_KWARG_KEY below) for a
-# Claude-Code/Roo-Code tool-calling workload, so the tool-calling recipe is
+# Claude-Code/Zoo-Code tool-calling workload, so the tool-calling recipe is
 # the correct one here - an earlier version of this profile had wrongly
 # applied the reasoning-task numbers (full-entropy temp 1.0/top_p 1.0, no
 # repetition penalty) to a tool-calling setup, which is a plausible direct

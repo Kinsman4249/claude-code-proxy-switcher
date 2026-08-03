@@ -36,7 +36,7 @@ LLAMA_NO_KV_OFFLOAD="${LLAMA_NO_KV_OFFLOAD:-no}"           # whole KV cache in s
 KEEP_PLE_ON_CPU="${KEEP_PLE_ON_CPU:-yes}"                  # Per-Layer Embedding tables in system RAM (Gemma only)
 LLAMA_SPEC_DRAFT_N="${LLAMA_SPEC_DRAFT_N:-2}"
 LLAMA_N_PREDICT="${LLAMA_N_PREDICT:-4096}"                 # safety cap on tokens per response (llama-server -n);
-                                                            # neither llama-server nor Roo Code's own client
+                                                            # neither llama-server nor Zoo Code's own client
                                                             # settings (maxTokens: -1, includeMaxTokens: false)
                                                             # cap output otherwise, so a degenerate/repeating
                                                             # generation would run until it fills the whole
