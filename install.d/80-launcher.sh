@@ -287,7 +287,7 @@ mkdir -p "\$(dirname "\$LOG_FILE")"
 
 if ! distrobox enter "$CONTAINER_NAME" -- bash -lc 'command -v openhands' >/dev/null 2>&1; then
   echo "OpenHands not found inside $CONTAINER_NAME - installing (needs Python 3.12, can take a few minutes)..."
-  if ! distrobox enter "$CONTAINER_NAME" -- bash -lc '
+  distrobox enter "$CONTAINER_NAME" -- bash -lc '
     set -e
     if command -v python3.12 >/dev/null 2>&1; then
       PY=python3.12
@@ -298,8 +298,18 @@ if ! distrobox enter "$CONTAINER_NAME" -- bash -lc 'command -v openhands' >/dev/
       sudo dnf install -y python3.12
       PY=python3.12
     fi
+    if ! "\$PY" -m pip --version >/dev/null 2>&1; then
+      echo "pip module not found for \$PY - installing via dnf..." >&2
+      sudo dnf install -y python3.12-pip
+    fi
     sudo "\$PY" -m pip install --break-system-packages -q openhands
-  ' 2>&1 | tee -a "\$LOG_FILE"; then
+  ' 2>&1 | tee -a "\$LOG_FILE"
+  # \$PIPESTATUS[0] is the distrobox/install command's own exit code - tee
+  # itself always succeeds, so testing the pipeline's own \$? would silently
+  # hide a failed install (this bit OpenHands before: python3.12 lacked its
+  # pip module, the install died, but tee'"'"'s success made the script claim
+  # "OpenHands installed." anyway).
+  if [ "\${PIPESTATUS[0]}" -ne 0 ]; then
     echo "OpenHands install failed - see \$LOG_FILE for the full log. Not launching it." >&2
     exit 1
   fi
