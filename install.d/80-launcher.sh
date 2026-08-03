@@ -190,11 +190,17 @@ $NGL_COMMENT
 # --cache-type-k/v $CACHE_TYPE_K/$CACHE_TYPE_V   KV cache quantization (see model-profiles/$MODEL_PROFILE.sh if not q8_0/q8_0)
 $SPEC_COMMENT
 $FIT_COMMENT
-# --no-webui              disable llama.cpp's built-in browser chat UI - you
-#                          only talk to this server through Claude Code /
-#                          the API, never a browser, so there's no reason to
-#                          serve it (doesn't touch VRAM either way, it's just
-#                          static asset serving on the same HTTP listener)
+# --no-webui (conditional) llama.cpp's built-in browser chat UI is off by
+#                          default (you normally only talk to this server
+#                          through Claude Code / the API), but
+#                          LLAMA_ENABLE_WEBUI=yes ./start-local-llama.sh
+#                          leaves it on instead - see model-session.sh's
+#                          "browser chat UI" prompt, which sets this for you.
+#                          Same process, same port, same model already in
+#                          VRAM either way: --no-webui only toggles whether
+#                          static chat-UI assets are served alongside the
+#                          API on that one listener, so this never loads a
+#                          second copy of the model.
 # (sliding-window attention: llama.cpp only allocates the local-attention
 #  window's worth of KV cache by default, not the full context, on models
 #  that use it - this is the default and stays on; --swa-full is never
@@ -225,6 +231,12 @@ if curl -s -o /dev/null "http://127.0.0.1:$LLAMA_PORT/health"; then
   exit 0
 fi
 
+WEBUI_FLAG="--no-webui"
+if [ "\${LLAMA_ENABLE_WEBUI:-no}" = "yes" ]; then
+  WEBUI_FLAG=""
+  echo "Browser chat UI enabled - once healthy, open http://127.0.0.1:$LLAMA_PORT in a browser."
+fi
+
 distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
   -m "$LLAMA_MODEL_PATH"$NGL_FLAG \\
   -c $LLAMA_CTX_SIZE \\
@@ -233,7 +245,7 @@ distrobox enter "$CONTAINER_NAME" -- "$LLAMA_SERVER_BIN" \\
   -fa on \\
   --cache-type-k $CACHE_TYPE_K --cache-type-v $CACHE_TYPE_V \\
   $FIT_FLAG \\
-  --no-webui \\
+  \$WEBUI_FLAG \\
   --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS \\
   2>&1 | tee "\$LOG_FILE"
 EOF
@@ -247,10 +259,12 @@ EOF
 # on the "already running" fast path), to install/launch OpenHands - a
 # dockerless pip-based AI coding agent CLI (https://docs.openhands.dev/) -
 # inside the same $CONTAINER_NAME, pointed at this project's local litellm
-# proxy. Kept out of the model-only fast path (the "already running, exit 0"
-# branch below) on purpose: that path is for "I just need the server up",
-# not "open a whole second tool", and OpenHands' own install/launch has
-# nothing to do with whether llama-server itself is already up.
+# proxy, AND to enable llama.cpp's own browser chat UI on the server it's
+# about to start. Both kept out of the model-only fast path (the "already
+# running, exit 0" branch below) on purpose: that path is for "I just need
+# the server up", not "open/enable something extra" - and if the server is
+# already running, its --no-webui choice was already locked in when it
+# started, so there's nothing left to toggle without a restart.
 build_desktop_launcher() {
   if [ "$INSTALL_DESKTOP_SHORTCUT" = "yes" ]; then
     # start-openhands.sh: install (first run only) + launch OpenHands inside
@@ -309,7 +323,17 @@ if ! distrobox enter "$CONTAINER_NAME" -- bash -lc 'command -v openhands' >/dev/
       echo "pip module not found for \$PY - bootstrapping via ensurepip..." >&2
       sudo "\$PY" -m ensurepip --upgrade
     fi
-    sudo "\$PY" -m pip install --break-system-packages -q openhands
+    # Plain pip cannot resolve openhands'"'"' dependency tree (confirmed:
+    # pip backtracks through hundreds of browser-use/opentelemetry/
+    # huggingface-hub versions and still fails with ResolutionImpossible on
+    # openhands-sdk vs lmnr, even though a valid resolution exists). openhands'"'"'
+    # own PyPI page recommends uv for exactly this reason - its resolver
+    # handles the same dependency set cleanly (verified: uv pip install
+    # openhands resolves and runs with no changes needed on either side).
+    if ! "\$PY" -m uv --version >/dev/null 2>&1; then
+      sudo "\$PY" -m pip install --break-system-packages -q uv
+    fi
+    sudo "\$PY" -m uv pip install --python "\$PY" --break-system-packages -q openhands
   ' 2>&1 | tee -a "\$LOG_FILE"
   # \$PIPESTATUS[0] is the distrobox/install command's own exit code - tee
   # itself always succeeds, so testing the pipeline's own \$? would silently
@@ -340,8 +364,9 @@ EOF
 # settings, don't hand-edit (your edits won't survive the next install.sh
 # run). Runs inside the terminal window the "Start Local Model" desktop icon
 # opens: offers to also install/launch OpenHands (in a second terminal
-# window, so both stay visible), then runs start-local-llama.sh in this one
-# so its own log output stays visible.
+# window, so both stay visible) and/or enable llama.cpp's own browser chat
+# UI, then runs start-local-llama.sh in this one so its own log output stays
+# visible.
 
 TERMINAL_CMD=""
 if command -v konsole >/dev/null 2>&1; then
@@ -361,6 +386,14 @@ if [[ "\$OH_ANS" =~ ^[Yy] ]]; then
     echo "No terminal emulator found to open OpenHands in its own window - running it here instead, before llama-server."
     "$BIN_DIR/start-openhands.sh"
   fi
+fi
+
+# Same server process, same port, same model already in VRAM either way -
+# this just toggles whether llama.cpp also serves its own browser chat UI
+# alongside the API, so it never loads a second copy of the model.
+read -rp "Also enable llama.cpp's browser chat UI on this server (http://127.0.0.1:$LLAMA_PORT)? [y/N] " WEBUI_ANS
+if [[ "\$WEBUI_ANS" =~ ^[Yy] ]]; then
+  export LLAMA_ENABLE_WEBUI=yes
 fi
 
 "$BIN_DIR/start-local-llama.sh"
@@ -423,8 +456,9 @@ EOF
     echo "your specific desktop session, check that it actually pops a window)."
     echo "It also now asks whether to install/launch OpenHands (an AI coding"
     echo "agent CLI) inside $CONTAINER_NAME, pointed at this project's local"
-    echo "proxy - answer 'n' (or just press Enter) to skip it and get the old"
-    echo "model-only behavior."
+    echo "proxy, and whether to enable llama.cpp's own browser chat UI on the"
+    echo "server - answer 'n' (or just press Enter) to skip either and get the"
+    echo "old model-only behavior."
   fi
 }
 
@@ -443,6 +477,9 @@ launch_and_verify() {
   echo "    --port $LLAMA_PORT --host 127.0.0.1$EXTRA_FLAGS"
   echo
   echo "Or just: $BIN_DIR/start-local-llama.sh"
+  echo "(add LLAMA_ENABLE_WEBUI=yes before that to also enable llama.cpp's own"
+  echo "browser chat UI at http://127.0.0.1:$LLAMA_PORT - same server, same model,"
+  echo "just serves the extra static UI alongside the API)"
   echo "Or use the 'Start Local Model' desktop icon (if installed) to open this"
   echo "in its own terminal window automatically from now on."
   read -rp "Press Enter here once it's running (or Ctrl+C to skip this check)... " _
