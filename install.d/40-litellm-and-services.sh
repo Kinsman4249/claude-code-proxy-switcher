@@ -33,13 +33,49 @@ install_litellm_config() {
 # Must happen before Step 4 enables/starts the systemd service below: on a
 # fresh container (or a broken old setup where this got skipped somehow),
 # starting the service before litellm exists just crash-loops it.
+#
+# Two gotchas found the hard way (2026-08-03, live debug of a container with
+# both python3.12 and python3.13 installed):
+#
+# 1. Some containers end up with more than one Python (e.g. one pulled in by
+#    an unrelated tool), each with its own site-packages. The "litellm"
+#    command on PATH is a shebang script pinned to one specific interpreter,
+#    but a bare "python3 -c 'import litellm'" check can silently resolve to
+#    a *different* interpreter that happens to have litellm fully installed
+#    (proxy extras and all). The check then reports success while the
+#    systemd unit - which always runs the "litellm" binary directly, never
+#    "python3 -m litellm" - keeps crash-looping on startup. So: resolve the
+#    exact interpreter the "litellm" binary itself runs under (its shebang
+#    line), and use that same interpreter for both the check and the
+#    install, not whatever "python3" happens to be first on PATH.
+#
+# 2. "import litellm" alone is too weak a check anyway: the base package
+#    imports fine without the proxy extras (apscheduler, uvicorn, etc.), so
+#    it has to import litellm.proxy.proxy_server specifically - the same
+#    module "litellm --config ..." (what the systemd unit runs) imports on
+#    startup, and the thing that actually fails with a bare `pip install
+#    litellm` (no [proxy] extra).
 install_litellm_in_container() {
-  distrobox enter "$CONTAINER_NAME" -- bash -lc "
-    python3 -c 'import litellm' 2>/dev/null || {
-      python3 -m pip --version >/dev/null 2>&1 || sudo dnf install -y python3-pip
-      sudo python3 -m pip install 'litellm[proxy]' --break-system-packages -q
+  distrobox enter "$CONTAINER_NAME" -- bash -lc '
+    LITELLM_BIN="$(command -v litellm || true)"
+    if [ -n "$LITELLM_BIN" ]; then
+      PYBIN="$(head -1 "$LITELLM_BIN" | sed "s/^#!//")"
+      [ -x "$PYBIN" ] || PYBIN=python3
+    else
+      PYBIN=python3
+    fi
+
+    "$PYBIN" -c "import litellm.proxy.proxy_server" 2>/dev/null || {
+      "$PYBIN" -m pip --version >/dev/null 2>&1 || sudo dnf install -y python3-pip
+      # fastapi>=0.140.4 (released 2026-07-27) removed get_flat_dependant(),
+      # which the litellm proxy server still imports at startup - pin below
+      # that so a plain "pip install litellm[proxy]" cannot pull in a
+      # broken fastapi. litellm itself only declares fastapi>=0.136.3,<1.0,
+      # a range loose enough to include the broken releases; this is a
+      # workaround for that upstream gap, not a formal litellm requirement.
+      sudo "$PYBIN" -m pip install "litellm[proxy]" "fastapi<0.140" --break-system-packages -q
     }
-  "
+  '
   log "Confirmed litellm is installed inside $CONTAINER_NAME"
 }
 
