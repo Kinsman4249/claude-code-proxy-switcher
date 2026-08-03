@@ -186,6 +186,40 @@ Git operations (commit, push, tags) aren't a proxy concern at all - Zoo Code run
 
 **Use the "OpenAI Compatible" provider type, not "LiteLLM"** if Zoo Code offers both - "LiteLLM" mode calls LiteLLM's own management API (e.g. `/v1/model/group/info`) to populate its model dropdown, a different endpoint than the plain `/v1/models` OpenAI-Compatible mode uses, and that management endpoint can 404 depending on your LiteLLM version even when the proxy itself is healthy and reachable.
 
+### Kilo Code CLI
+
+[Kilo Code](https://kilo.ai/docs/code-with-ai/platforms/cli) is a separate terminal-based client, not a VS Code extension - it is not touched by `claude-local-toggle.sh` at all (that script only ever edits `~/.claude/settings.json`, which Kilo does not read). Point it at the proxy through its own config file instead: `~/.config/kilo/kilo.json` (or `kilo.jsonc` - global scope) or a project-level `./kilo.json`/`./.kilo/`. A minimal provider block:
+
+```jsonc
+{
+  "model": "litellm/local-llm",
+  "provider": {
+    "litellm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://localhost:4000/v1",
+        "apiKey": "sk-local-dev-key"
+      },
+      "models": {
+        "local-llm": {
+          "name": "Local LLM (LiteLLM)",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Two things about this config are easy to get wrong and fail silently or confusingly:
+
+- **The API key.** Kilo's config format supports `{env:PROXY_MASTER_KEY}`-style env var references, but nothing in this project exports `PROXY_MASTER_KEY` (or any of `~/.config/claude-local-setup.conf`'s other values) into your shell environment - it is a config file, not sourced by anything. A `{env:...}` reference to a variable that is not actually set resolves to empty, so Kilo sends no `Authorization` header at all. Worse, LiteLLM's own auth-failure error path throws an unrelated `ModuleNotFoundError: No module named 'prisma'` (an optional dependency this project's master-key-only setup does not install) instead of a clean 401 when a request arrives with no key, so the symptom in `journalctl --user -u litellm-ollama-box.service` is a confusing 500, not an obviously auth-shaped error. Simplest fix: put the literal key value in the config directly, as above, rather than an `{env:...}` reference - safe for a global, non-repo config file, and this is a local-only token gating your own machine's proxy port anyway (see above), not a real API key. If you do want the `{env:...}` form, you have to export the variable yourself (e.g. in `.bashrc`) - this project will not do it for you.
+- **`limit.context`/`limit.output`.** Same as Zoo Code's client-side settings above - Kilo cannot query `llama-server` for these, so they have to be kept in sync by hand with the active profile's real values (`LLAMA_CTX_SIZE` and `LLAMA_N_PREDICT` in `~/.config/claude-local-setup.conf`, or just read them straight out of the generated `~/.local/bin/start-local-llama.sh`'s `-c`/`-n` flags). They go stale silently - nothing errors if `kilo.jsonc` still says `32768` after you have re-run `install.sh` with a larger context, it just means Kilo may truncate or misjudge conversation length well before the model's real limit.
+
 ### Recommended client-side model settings per profile
 
 Zoo Code's "OpenAI Compatible" provider asks you to describe the model's capabilities yourself (context window, image support, etc.) since it can't query an arbitrary OpenAI-compatible backend for them. These fields don't affect `llama-server` itself - they just tell Zoo Code (or another client) what to expect, so setting them wrong doesn't break inference, but it can cause premature truncation (window set too low) or a client sending image content the model can't use (image support set true on a text-only model).
